@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(sleep 20 && /mnt/c/Windows/System32/cmd.exe /c \"tasklist | findstr PhotoVault\" 2>&1)"
+    ]
+  }
+}

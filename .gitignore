@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+*.egg
+.eggs/
+
+# Virtual environments
+.venv/
+.venv_win/
+venv/
+env/
+
+# PyInstaller build artifacts
+build/
+dist/
+*.spec.bak
+
+# Database & user data
+*.db
+*.db-shm
+*.db-wal
+
+# Credentials / tokens
+token.json
+credentials.json
+*.token
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+error.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
