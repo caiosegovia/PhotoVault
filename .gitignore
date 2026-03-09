@@ -16,6 +16,8 @@ env/
 # PyInstaller build artifacts
 build/
 dist/
+!dist/*.zip
+!dist/PhotoVault/
 *.spec.bak
 
 # Database & user data
