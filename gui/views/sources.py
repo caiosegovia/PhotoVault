@@ -81,9 +81,9 @@ class SourcesView:
         )
 
         self.scan_btn = ctk.CTkButton(
-            self.scroll, text='▶  Escanear Fontes',
+            self.scroll, text='Próximo: Regras  ▶',
             font=(FONT_FAMILY, FONT_SIZE_BODY, 'bold'),
-            fg_color=COLOR_SUCCESS, hover_color='#27ae60',
+            fg_color=COLOR_ACCENT, hover_color=COLOR_ACCENT2,
             corner_radius=8, height=44, width=220,
             command=self._start_scan
         )
@@ -229,23 +229,50 @@ class SourcesView:
                     return
                 client = GooglePhotosClient(str(creds_path))
 
+            self.status_label.configure(text='Autenticando no Google...')
             if client.authenticate():
                 self.app.app_state['google_client'] = client
                 quota = client.get_storage_quota()
-                src = {
-                    'path': 'Google Photos',
-                    'type': 'cloud',
-                    'client': client,
-                    'size_bytes': quota.get('used', 0),
-                    'total': 0,
-                }
-                self.app.app_state['sources'].append(src)
-                self._refresh_sources()
-                self.status_label.configure(text='Google Photos conectado!')
+
+                # We need to scan/count cloud items too
+                self.status_label.configure(text='Sincronizando metadados do Google Photos...')
+                self.loading_bar.configure(mode='indeterminate')
+                self.loading_bar.pack(fill='x', padx=20, pady=(0, 4))
+                self.loading_bar.start()
+
+                def cloud_worker():
+                    items = []
+                    def cb(count):
+                        self.parent.after(0, lambda c=count: self.status_label.configure(
+                            text=f'Sincronizando Google Photos: {c} itens...'))
+
+                    for item in client.list_media_items(callback=cb):
+                        items.append(item)
+
+                    src = {
+                        'path': 'Google Photos',
+                        'type': 'cloud',
+                        'client': client,
+                        'items': items,
+                        'size_bytes': quota.get('used', 0),
+                        'total': len(items),
+                        'photos': sum(1 for i in items if 'image' in i.get('mimeType', '')),
+                        'videos': sum(1 for i in items if 'video' in i.get('mimeType', '')),
+                    }
+                    self.parent.after(0, lambda s=src: self._on_cloud_added(s))
+
+                threading.Thread(target=cloud_worker, daemon=True).start()
             else:
                 self.status_label.configure(text='Falha na autenticação. Verifique em Configurações.')
         except Exception as e:
             self.status_label.configure(text=f'Erro: {e}')
+
+    def _on_cloud_added(self, src):
+        self.loading_bar.stop()
+        self.loading_bar.pack_forget()
+        self.app.app_state['sources'].append(src)
+        self._refresh_sources()
+        self.status_label.configure(text='Google Photos conectado e sincronizado!')
 
     def _start_scan(self):
         sources = self.app.app_state.get('sources', [])
@@ -263,8 +290,14 @@ class SourcesView:
         def worker():
             from core.scanner import count_files
             local_srcs = [s for s in sources if s.get('type') != 'cloud']
-            n = len(local_srcs)
-            totals = {'total': 0, 'photos': 0, 'videos': 0, 'others': 0, 'size_bytes': 0}
+            cloud_srcs = [s for s in sources if s.get('type') == 'cloud']
+            n = len(local_srcs) + len(cloud_srcs)
+            totals = {
+                'total': 0, 'photos': 0, 'videos': 0, 'others': 0, 'size_bytes': 0,
+                'photos_size': 0, 'videos_size': 0, 'others_size': 0
+            }
+
+            # Local scan
             for i, src in enumerate(local_srcs):
                 counts = count_files(Path(src['path']))
                 for k in totals:
@@ -275,6 +308,13 @@ class SourcesView:
                     self.loading_bar.set(v),
                     self.status_label.configure(text=f'Pasta {ix} de {t}...')
                 ))
+            # Cloud items contribution
+            for src in cloud_srcs:
+                for k in ['total', 'photos', 'videos', 'others', 'size_bytes']:
+                    totals[k] += src.get(k, 0)
+                # Google doesn't give size per type easily in quota, so we estimate or just add to total
+                totals['photos_size'] += src.get('size_bytes', 0) if src.get('photos', 0) > 0 else 0
+
             self.app.app_state['scan_results'] = totals
             self.parent.after(0, self._on_scan_done)
 
@@ -283,7 +323,7 @@ class SourcesView:
     def _on_scan_done(self):
         self._scanning = False
         self.loading_bar.pack_forget()
-        self.scan_btn.configure(state='normal', text='▶  Escanear Fontes')
+        self.scan_btn.configure(state='normal', text='Próximo: Regras  ▶')
         results = self.app.app_state.get('scan_results', {})
         total = results.get('total', 0)
         self.status_label.configure(

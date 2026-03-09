@@ -213,14 +213,26 @@ class RulesView:
         self.thresh_slider.set(self.app.app_state.get('phash_threshold', 10))
         self.thresh_slider.pack(fill='x', padx=20, pady=(4, 16))
 
-        # Continue button
+        # Wizard Buttons
+        wiz_frame = ctk.CTkFrame(self.scroll, fg_color='transparent')
+        wiz_frame.pack(pady=20)
+
         ctk.CTkButton(
-            self.scroll, text='Continuar → Preview',
+            wiz_frame, text='◀ Voltar: Fontes',
+            font=(FONT_FAMILY, FONT_SIZE_BODY, 'bold'),
+            fg_color='transparent', hover_color=COLOR_ACCENT,
+            border_color=COLOR_ACCENT, border_width=1,
+            corner_radius=8, height=44, width=180,
+            command=lambda: self.main_window.navigate('sources')
+        ).pack(side='left', padx=10)
+
+        ctk.CTkButton(
+            wiz_frame, text='Próximo: Preview ▶',
             font=(FONT_FAMILY, FONT_SIZE_BODY, 'bold'),
             fg_color=COLOR_ACCENT, hover_color=COLOR_ACCENT2,
-            corner_radius=8, height=44, width=220,
+            corner_radius=8, height=44, width=180,
             command=self._continue
-        ).pack(pady=20)
+        ).pack(side='left', padx=10)
 
     def _browse_dest(self):
         path = filedialog.askdirectory(title='Selecionar pasta de destino')

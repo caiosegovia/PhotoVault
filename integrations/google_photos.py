@@ -98,9 +98,10 @@ class GooglePhotosClient:
                 break
         return albums
 
-    def list_media_items(self, album_id: Optional[str] = None, page_size: int = 100) -> Iterator[dict]:
+    def list_media_items(self, album_id: Optional[str] = None, page_size: int = 100, callback: Optional[Callable[[int], None]] = None) -> Iterator[dict]:
         """Iterate over media items, optionally filtered by album."""
         page_token = None
+        count = 0
         while True:
             if album_id:
                 body = {'albumId': album_id, 'pageSize': page_size}
@@ -114,6 +115,9 @@ class GooglePhotosClient:
                 data = self._get('mediaItems', params)
 
             items = data.get('mediaItems', [])
+            count += len(items)
+            if callback:
+                callback(count)
             yield from items
 
             page_token = data.get('nextPageToken')

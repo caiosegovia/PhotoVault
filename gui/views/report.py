@@ -92,6 +92,24 @@ class ReportView:
         )
         self.details_text.pack(fill='x', padx=10, pady=(0, 16))
 
+        # Bottom Wizard Button
+        ctk.CTkButton(
+            self.scroll, text='Nova Sessão (Início) ⟲',
+            font=(FONT_FAMILY, FONT_SIZE_BODY, 'bold'),
+            fg_color=COLOR_ACCENT, hover_color=COLOR_ACCENT2,
+            corner_radius=8, height=44, width=220,
+            command=self._new_session
+        ).pack(pady=20)
+
+    def _new_session(self):
+        self.app.app_state['sources'] = []
+        self.app.app_state['scan_results'] = None
+        self.app.app_state['plan'] = None
+        self.app.app_state['dup_result'] = None
+        self.app.app_state['exec_result'] = None
+        self.app.app_state['session'] = {}
+        self.main_window.navigate('dashboard')
+
     def _stat_card(self, col: int, title: str, value: str, icon: str, color: str):
         card = ctk.CTkFrame(self.cards_frame, fg_color=COLOR_CARD, corner_radius=12)
         card.grid(row=0, column=col, padx=8, pady=4, sticky='ew')

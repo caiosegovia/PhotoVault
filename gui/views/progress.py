@@ -148,7 +148,18 @@ class ProgressView:
             command=self._cancel,
             state='disabled'
         )
-        self.cancel_btn.pack(side='left')
+        self.cancel_btn.pack(side='left', padx=(0, 20))
+
+        # Back button
+        self.back_btn = ctk.CTkButton(
+            ctrl, text='◀ Voltar: Duplicatas',
+            font=(FONT_FAMILY, FONT_SIZE_BODY, 'bold'),
+            fg_color='transparent', hover_color=COLOR_ACCENT,
+            border_color=COLOR_ACCENT, border_width=1,
+            corner_radius=8, height=44, width=180,
+            command=lambda: self.main_window.navigate('duplicates')
+        )
+        self.back_btn.pack(side='right')
 
         # Settings row (workers + verify)
         settings = ctk.CTkFrame(self.scroll, fg_color=COLOR_CARD, corner_radius=10)
@@ -232,6 +243,7 @@ class ProgressView:
         self.start_btn.configure(state='disabled')
         self.pause_btn.configure(state='normal')
         self.cancel_btn.configure(state='normal')
+        self.back_btn.configure(state='disabled')
         try:
             self.workers_btn.configure(state='disabled')
             self._settings_frame.configure(fg_color='#1a1a2e')
@@ -313,6 +325,7 @@ class ProgressView:
         self.start_btn.configure(state='normal', text='▶  Iniciar')
         self.pause_btn.configure(state='disabled')
         self.cancel_btn.configure(state='disabled')
+        self.back_btn.configure(state='normal')
         try:
             self.workers_btn.configure(state='normal')
             self._settings_frame.configure(fg_color=COLOR_CARD)
@@ -354,6 +367,7 @@ class ProgressView:
         self.start_btn.configure(state='normal', text='✓ Concluído')
         self.pause_btn.configure(state='disabled')
         self.cancel_btn.configure(state='disabled')
+        self.back_btn.configure(state='normal')
         try:
             self.workers_btn.configure(state='normal')
             self._settings_frame.configure(fg_color=COLOR_CARD)
@@ -392,6 +406,7 @@ class ProgressView:
         self.start_btn.configure(state='normal', text='▶  Iniciar')
         self.pause_btn.configure(state='disabled')
         self.cancel_btn.configure(state='disabled')
+        self.back_btn.configure(state='normal')
         try:
             self.workers_btn.configure(state='normal')
             self._settings_frame.configure(fg_color=COLOR_CARD)

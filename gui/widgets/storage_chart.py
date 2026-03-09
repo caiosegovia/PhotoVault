@@ -7,6 +7,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 DARK_BG = '#1a1a2e'
 CARD_BG = '#0f3460'
 ACCENT_COLORS = ['#14a085', '#0d7377', '#f39c12', '#e74c3c', '#9b59b6', '#3498db']
+SIZE_COLORS = ['#2ecc71', '#3498db', '#95a5a6']
 
 
 def _apply_dark_style(fig, ax):
@@ -46,6 +47,46 @@ class StorageDonutChart(ctk.CTkFrame):
         ax.set_aspect('equal')
         fig.tight_layout(pad=0.5)
 
+        canvas = FigureCanvasTkAgg(fig, master=self)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill='both', expand=True)
+        plt.close(fig)
+
+
+class StorageSizeBarChart(ctk.CTkFrame):
+    def __init__(self, parent, data: dict, **kw):
+        """data: {'Fotos': bytes, 'Vídeos': bytes, 'Outros': bytes}"""
+        super().__init__(parent, fg_color='transparent', **kw)
+        self._build(data)
+
+    def _build(self, data: dict):
+        from utils.formatting import format_size
+        labels = list(data.keys())
+        values = list(data.values())
+
+        if not any(v > 0 for v in values):
+            ctk.CTkLabel(self, text='Sem dados de tamanho', text_color='#888').pack(expand=True)
+            return
+
+        fig, ax = plt.subplots(figsize=(4, 2.8), dpi=90)
+        _apply_dark_style(fig, ax)
+
+        y_pos = range(len(labels))
+        bars = ax.barh(y_pos, values, color=SIZE_COLORS[:len(labels)], edgecolor=CARD_BG)
+        ax.set_yticks(y_pos)
+        ax.set_yticklabels(labels, color='#e0e0e0', fontsize=9)
+        ax.invert_yaxis()  # labels read top-to-bottom
+
+        # Add size labels at the end of bars
+        for i, v in enumerate(values):
+            ax.text(v, i, f' {format_size(v)}', va='center', color='#888888', fontsize=8)
+
+        # Hide x axis as we have text labels
+        ax.get_xaxis().set_visible(False)
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+
+        fig.tight_layout(pad=1.0)
         canvas = FigureCanvasTkAgg(fig, master=self)
         canvas.draw()
         canvas.get_tk_widget().pack(fill='both', expand=True)

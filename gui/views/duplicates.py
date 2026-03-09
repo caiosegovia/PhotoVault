@@ -156,19 +156,19 @@ class DuplicatesView:
         nav.pack(fill='x', padx=20, pady=(0, 16))
 
         ctk.CTkButton(
-            nav, text='← Voltar',
-            font=(FONT_FAMILY, FONT_SIZE_BODY),
+            nav, text='◀ Voltar: Preview',
+            font=(FONT_FAMILY, FONT_SIZE_BODY, 'bold'),
             fg_color='transparent', hover_color=COLOR_ACCENT,
             border_color=COLOR_ACCENT, border_width=1,
-            corner_radius=8, width=120, height=40,
+            corner_radius=8, width=180, height=44,
             command=lambda: self.main_window.navigate('preview')
         ).pack(side='left')
 
         ctk.CTkButton(
-            nav, text='Continuar → Executar',
+            nav, text='Próximo: Executar ▶',
             font=(FONT_FAMILY, FONT_SIZE_BODY, 'bold'),
             fg_color=COLOR_ACCENT, hover_color=COLOR_ACCENT2,
-            corner_radius=8, width=200, height=40,
+            corner_radius=8, width=220, height=44,
             command=lambda: self.main_window.navigate('progress')
         ).pack(side='right')
 

@@ -43,9 +43,17 @@ class PreviewView:
             fg_color='#2a2a4a', progress_color=COLOR_ACCENT
         )
 
-        # Tree area
-        tree_card = ctk.CTkFrame(self.parent, fg_color=COLOR_CARD, corner_radius=12)
-        tree_card.pack(fill='both', expand=True, padx=20, pady=12)
+        # Tab view for Tree vs Grid
+        self.tabview = ctk.CTkTabview(
+            self.parent, fg_color=COLOR_CARD, corner_radius=12,
+            segmented_button_fg_color=COLOR_CARD,
+            segmented_button_selected_color=COLOR_ACCENT,
+            segmented_button_unselected_color=COLOR_CARD
+        )
+        self.tabview.pack(fill='both', expand=True, padx=20, pady=12)
+
+        self.tab_tree = self.tabview.add('Lista Estruturada')
+        self.tab_grid = self.tabview.add('Galeria de Miniaturas')
 
         # Style treeview for dark theme
         style = ttk.Style()
@@ -63,7 +71,7 @@ class PreviewView:
         )
         style.map('PhotoVault.Treeview', background=[('selected', COLOR_ACCENT)])
 
-        tree_frame = ctk.CTkFrame(tree_card, fg_color='transparent')
+        tree_frame = ctk.CTkFrame(self.tab_tree, fg_color='transparent')
         tree_frame.pack(fill='both', expand=True, padx=10, pady=10)
 
         self.tree = ttk.Treeview(
@@ -83,6 +91,15 @@ class PreviewView:
         self.tree.configure(yscrollcommand=vsb.set)
         self.tree.pack(side='left', fill='both', expand=True)
         vsb.pack(side='right', fill='y')
+
+        # --- GRID TAB ---
+        self.grid_scroll = ctk.CTkScrollableFrame(self.tab_grid, fg_color='transparent')
+        self.grid_scroll.pack(fill='both', expand=True, padx=5, pady=5)
+
+        # Grid settings
+        self._grid_cols = 5
+        for i in range(self._grid_cols):
+            self.grid_scroll.columnconfigure(i, weight=1)
 
         # Tag colors
         self.tree.tag_configure('new', foreground=COLOR_SUCCESS)
@@ -113,19 +130,19 @@ class PreviewView:
         nav.pack(fill='x', padx=20, pady=(0, 16))
 
         ctk.CTkButton(
-            nav, text='← Voltar',
-            font=(FONT_FAMILY, FONT_SIZE_BODY),
+            nav, text='◀ Voltar: Regras',
+            font=(FONT_FAMILY, FONT_SIZE_BODY, 'bold'),
             fg_color='transparent', hover_color=COLOR_ACCENT,
             border_color=COLOR_ACCENT, border_width=1,
-            corner_radius=8, width=120, height=40,
+            corner_radius=8, width=180, height=44,
             command=lambda: self.main_window.navigate('rules')
         ).pack(side='left')
 
         ctk.CTkButton(
-            nav, text='Continuar → Duplicatas',
+            nav, text='Próximo: Duplicatas ▶',
             font=(FONT_FAMILY, FONT_SIZE_BODY, 'bold'),
             fg_color=COLOR_ACCENT, hover_color=COLOR_ACCENT2,
-            corner_radius=8, width=220, height=40,
+            corner_radius=8, width=220, height=44,
             command=self._continue
         ).pack(side='right')
 
@@ -191,6 +208,8 @@ class PreviewView:
     def _clear_tree(self):
         for item in self.tree.get_children():
             self.tree.delete(item)
+        for w in self.grid_scroll.winfo_children():
+            w.destroy()
 
     def _on_plan_error(self, msg: str):
         self._planning = False
@@ -204,10 +223,13 @@ class PreviewView:
         self.loading_bar.set(1.0)
         self.loading_bar.pack_forget()
         self._clear_tree()
+        self._render_gen = getattr(self, '_render_gen', 0) + 1
 
         # Build folder tree
         folders: dict[str, dict] = {}
+        ops_to_grid = []
         for op in plan.operations:
+            ops_to_grid.append(op)
             try:
                 parts = op.dst.relative_to(plan.destination).parts
             except ValueError:
@@ -259,6 +281,36 @@ class PreviewView:
         self.summary_label.configure(
             text=f'{format_count(total)} arquivos → {len(folders)} pastas  •  {conflicts} conflitos resolvidos'
         )
+
+        # Grid rendering
+        self._render_grid_batch(ops_to_grid, 0, self._render_gen)
+
+    def _render_grid_batch(self, ops, start, gen, batch=20):
+        if gen != self._render_gen:
+            return
+
+        end = min(start + batch, len(ops))
+        from gui.widgets.thumbnail_viewer import ThumbnailViewer
+
+        for i in range(start, end):
+            op = ops[i]
+            r, c = divmod(i, self._grid_cols)
+
+            frame = ctk.CTkFrame(self.grid_scroll, fg_color='transparent')
+            frame.grid(row=r, column=c, padx=5, pady=5, sticky='nsew')
+
+            tv = ThumbnailViewer(frame, op.src, size=(140, 105))
+            tv.pack()
+
+            lbl = ctk.CTkLabel(
+                frame, text=op.src.name,
+                font=(FONT_FAMILY, 9), text_color=COLOR_TEXT_DIM,
+                wraplength=130
+            )
+            lbl.pack()
+
+        if end < len(ops) and end < 200: # Limit preview to first 200 for performance
+            self.parent.after(50, lambda: self._render_grid_batch(ops, end, gen, batch))
 
     def _continue(self):
         if not self.app.app_state.get('plan'):

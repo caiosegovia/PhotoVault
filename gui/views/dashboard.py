@@ -345,11 +345,12 @@ class DashboardView:
             self._cards_frame, 'Espaço', '—', 'total nas fontes', '💾', COLOR_SUCCESS)
         self.card_size.grid(row=0, column=3, padx=(8, 0), sticky='ew')
 
-        # Second row: dups + freed
+        # Second row: dups + freed + drive info
         self._cards2_frame = ctk.CTkFrame(self.scroll, fg_color='transparent')
         self._cards2_frame.pack(fill='x', pady=(0, 20))
-        self._cards2_frame.columnconfigure(0, weight=1)
-        self._cards2_frame.columnconfigure(1, weight=1)
+        self._cards2_frame.columnconfigure(0, weight=1, uniform='c')
+        self._cards2_frame.columnconfigure(1, weight=1, uniform='c')
+        self._cards2_frame.columnconfigure(2, weight=1, uniform='c')
 
         self.card_dups = BigNumberCard(
             self._cards2_frame, 'Grupos Duplicados', '—', 'exatos + visuais', '⧉', COLOR_WARNING)
@@ -357,31 +358,45 @@ class DashboardView:
 
         self.card_freed = BigNumberCard(
             self._cards2_frame, 'Espaço Liberável', '—', 'de duplicatas', '♻', COLOR_SUCCESS)
-        self.card_freed.grid(row=0, column=1, padx=(8, 0), sticky='ew')
+        self.card_freed.grid(row=0, column=1, padx=8, sticky='ew')
+
+        self.card_drive = BigNumberCard(
+            self._cards2_frame, 'Espaço em Disco', '—', 'no destino', '💽', COLOR_ACCENT2)
+        self.card_drive.grid(row=0, column=2, padx=(8, 0), sticky='ew')
 
         # Charts row
         charts_row = ctk.CTkFrame(self.scroll, fg_color='transparent')
         charts_row.pack(fill='x', pady=(0, 20))
         charts_row.columnconfigure(0, weight=1)
-        charts_row.columnconfigure(1, weight=2)
+        charts_row.columnconfigure(1, weight=1)
+        charts_row.columnconfigure(2, weight=1)
 
         donut_frame = ctk.CTkFrame(charts_row, fg_color=COLOR_CARD, corner_radius=12)
-        donut_frame.grid(row=0, column=0, padx=(0, 10), sticky='nsew')
+        donut_frame.grid(row=0, column=0, padx=(0, 5), sticky='nsew')
         ctk.CTkLabel(
-            donut_frame, text='Distribuição por Tipo',
+            donut_frame, text='Arquivos por Tipo',
             font=(FONT_FAMILY, FONT_SIZE_HEADER, 'bold'), text_color=COLOR_TEXT
         ).pack(pady=(16, 4))
         self.donut_container = ctk.CTkFrame(donut_frame, fg_color='transparent', height=200)
-        self.donut_container.pack(fill='x', padx=10, pady=(0, 16))
+        self.donut_container.pack(fill='both', expand=True, padx=10, pady=(0, 16))
+
+        size_bar_frame = ctk.CTkFrame(charts_row, fg_color=COLOR_CARD, corner_radius=12)
+        size_bar_frame.grid(row=0, column=1, padx=5, sticky='nsew')
+        ctk.CTkLabel(
+            size_bar_frame, text='Espaço por Tipo',
+            font=(FONT_FAMILY, FONT_SIZE_HEADER, 'bold'), text_color=COLOR_TEXT
+        ).pack(pady=(16, 4))
+        self.size_bar_container = ctk.CTkFrame(size_bar_frame, fg_color='transparent', height=200)
+        self.size_bar_container.pack(fill='both', expand=True, padx=10, pady=(0, 16))
 
         bar_frame = ctk.CTkFrame(charts_row, fg_color=COLOR_CARD, corner_radius=12)
-        bar_frame.grid(row=0, column=1, padx=(10, 0), sticky='nsew')
+        bar_frame.grid(row=0, column=2, padx=(5, 0), sticky='nsew')
         ctk.CTkLabel(
             bar_frame, text='Fotos por Ano',
             font=(FONT_FAMILY, FONT_SIZE_HEADER, 'bold'), text_color=COLOR_TEXT
         ).pack(pady=(16, 4))
         self.bar_container = ctk.CTkFrame(bar_frame, fg_color='transparent', height=200)
-        self.bar_container.pack(fill='x', padx=10, pady=(0, 16))
+        self.bar_container.pack(fill='both', expand=True, padx=10, pady=(0, 16))
 
         # Sources section
         ctk.CTkLabel(
@@ -422,6 +437,18 @@ class DashboardView:
         videos = results.get('videos', 0)
         others = results.get('others', 0)
         size = results.get('size_bytes', 0)
+
+        # Update drive card
+        dest = state.get('destination')
+        if dest:
+            from core.scanner import get_drive_info
+            drive_info = get_drive_info(Path(dest))
+            free = drive_info.get('free_space', 0)
+            total_sp = drive_info.get('total_space', 1)
+            perc = int((1 - free / total_sp) * 100)
+            self.card_drive.update(format_size(free), f'{perc}% ocupado')
+        else:
+            self.card_drive.update('—', 'defina um destino')
 
         # Update big number cards
         sources = state.get('sources', [])
@@ -494,30 +521,41 @@ class DashboardView:
         photos = results.get('photos', 0)
         videos = results.get('videos', 0)
         others = results.get('others', 0)
+        photos_size = results.get('photos_size', 0)
+        videos_size = results.get('videos_size', 0)
+        others_size = results.get('others_size', 0)
 
         # Skip expensive chart rebuild if data hasn't changed
-        sig = (photos, videos, others)
+        sig = (photos, videos, others, photos_size, videos_size, others_size)
         if sig == self._chart_sig:
             return
         self._chart_sig = sig
 
         for w in self.donut_container.winfo_children():
             w.destroy()
+        for w in self.size_bar_container.winfo_children():
+            w.destroy()
         for w in self.bar_container.winfo_children():
             w.destroy()
 
         try:
-            from gui.widgets.storage_chart import StorageDonutChart, StorageBarChart
+            from gui.widgets.storage_chart import StorageDonutChart, StorageBarChart, StorageSizeBarChart
             if photos + videos + others > 0:
                 StorageDonutChart(
                     self.donut_container,
                     data={'Fotos': photos, 'Vídeos': videos, 'Outros': others}
                 ).pack(fill='both', expand=True)
+
+                StorageSizeBarChart(
+                    self.size_bar_container,
+                    data={'Fotos': photos_size, 'Vídeos': videos_size, 'Outros': others_size}
+                ).pack(fill='both', expand=True)
             else:
-                ctk.CTkLabel(
-                    self.donut_container, text='Nenhum arquivo escaneado ainda.',
-                    text_color=COLOR_TEXT_DIM, font=(FONT_FAMILY, FONT_SIZE_BODY)
-                ).pack(expand=True, pady=40)
+                for container in [self.donut_container, self.size_bar_container]:
+                    ctk.CTkLabel(
+                        container, text='Nenhum arquivo escaneado ainda.',
+                        text_color=COLOR_TEXT_DIM, font=(FONT_FAMILY, FONT_SIZE_BODY)
+                    ).pack(expand=True, pady=40)
 
             try:
                 from core.database import get_files_by_year
@@ -525,7 +563,8 @@ class DashboardView:
             except Exception:
                 year_data = {}
             StorageBarChart(self.bar_container, data=year_data).pack(fill='both', expand=True)
-        except Exception:
+        except Exception as e:
+            print(f"Erro ao gerar gráficos: {e}")
             ctk.CTkLabel(
                 self.donut_container, text='Gráfico indisponível',
                 text_color=COLOR_TEXT_DIM

@@ -128,6 +128,9 @@ class MainWindow:
             self.views[view_id] = (frame, view)
 
     def navigate(self, view_id: str):
+        if not self._can_navigate_to(view_id):
+            return
+
         # Hide all views
         for vid, (frame, view) in self.views.items():
             frame.pack_forget()
@@ -147,6 +150,33 @@ class MainWindow:
         # Refresh view if it has a refresh method
         if hasattr(view, 'refresh'):
             view.refresh()
+
+        self.update_nav_state()
+
+    def _can_navigate_to(self, view_id: str) -> bool:
+        if view_id in ['dashboard', 'settings', 'sources']:
+            return True
+
+        state = self.app.app_state
+        if view_id == 'rules':
+            return len(state.get('sources', [])) > 0
+        if view_id == 'preview':
+            return state.get('destination') is not None
+        if view_id == 'duplicates':
+            return state.get('scan_results') is not None
+        if view_id == 'progress':
+            return state.get('plan') is not None
+        if view_id == 'report':
+            return state.get('session') is not None and state.get('session').get('id') is not None
+
+        return True
+
+    def update_nav_state(self):
+        for view_id, btn in self.nav_buttons.items():
+            if self._can_navigate_to(view_id):
+                btn.configure(state='normal', text_color=COLOR_TEXT if view_id == self.current_view else COLOR_TEXT_DIM)
+            else:
+                btn.configure(state='disabled', text_color='#444444')
 
     def update_dup_badge(self, count: int):
         if count > 0:

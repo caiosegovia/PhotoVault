@@ -46,6 +46,9 @@ def count_files(path: Path, extensions: Optional[Set[str]] = None) -> dict:
     videos = 0
     others = 0
     size_bytes = 0
+    photos_size = 0
+    videos_size = 0
+    others_size = 0
 
     try:
         for item in path.rglob('*'):
@@ -56,15 +59,20 @@ def count_files(path: Path, extensions: Optional[Set[str]] = None) -> dict:
                 continue
             total += 1
             try:
-                size_bytes += item.stat().st_size
+                s = item.stat().st_size
+                size_bytes += s
             except OSError:
-                pass
+                s = 0
+
             if ext in PHOTO_EXTENSIONS:
                 photos += 1
+                photos_size += s
             elif ext in VIDEO_EXTENSIONS:
                 videos += 1
+                videos_size += s
             else:
                 others += 1
+                others_size += s
     except PermissionError:
         pass
 
@@ -74,6 +82,9 @@ def count_files(path: Path, extensions: Optional[Set[str]] = None) -> dict:
         'videos': videos,
         'others': others,
         'size_bytes': size_bytes,
+        'photos_size': photos_size,
+        'videos_size': videos_size,
+        'others_size': others_size,
     }
 
 
