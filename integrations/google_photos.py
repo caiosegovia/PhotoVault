@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Iterator, Optional, Callable
 
 from utils.constants import GOOGLE_PHOTOS_SCOPES, TOKEN_PATH
 

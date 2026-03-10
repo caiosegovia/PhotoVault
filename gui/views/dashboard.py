@@ -2,6 +2,7 @@ import hashlib
 import json
 import threading
 from datetime import datetime
+from pathlib import Path
 import customtkinter as ctk
 from gui.app import (COLOR_CARD, COLOR_TEXT, COLOR_TEXT_DIM, COLOR_ACCENT2,
                      COLOR_ACCENT, COLOR_BG, COLOR_SUCCESS, COLOR_WARNING,
