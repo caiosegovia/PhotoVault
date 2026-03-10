@@ -3,7 +3,19 @@ PhotoVault — Desktop photo/video organizer
 Entry point: initializes DB, builds GUI, starts event loop.
 """
 import sys
+import os
 from pathlib import Path
+
+# Fix for visual artifacts on some Windows systems (disable hardware acceleration for Tkinter/Matplotlib)
+if sys.platform == 'win32':
+    os.environ['TKDND_LIBRARY'] = '' # dummy
+    # Force software rendering for some drivers if needed,
+    # but more importantly, handle DPI awareness to prevent multi-monitor glitches
+    try:
+        from ctypes import windll
+        windll.shcore.SetProcessDpiAwareness(1)
+    except Exception:
+        pass
 
 # Ensure project root is on sys.path (dev mode and PyInstaller onedir mode)
 if getattr(sys, 'frozen', False):
