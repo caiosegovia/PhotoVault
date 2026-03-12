@@ -29,9 +29,13 @@ sys.path.insert(0, str(_base))
 from core.database import init_db
 from gui.app import PhotoVaultApp
 from gui.main_window import MainWindow
+from utils.logging_config import setup_logging
 
 
 def main():
+    # Initialize robust logging
+    setup_logging()
+
     # Initialize persistent database
     init_db()
 

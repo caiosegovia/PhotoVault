@@ -1,20 +1,24 @@
 import threading
 import time
+import logging
 import customtkinter as ctk
 from pathlib import Path
 from gui.app import (COLOR_CARD, COLOR_TEXT, COLOR_TEXT_DIM, COLOR_ACCENT,
                      COLOR_ACCENT2, COLOR_BG, COLOR_SUCCESS, COLOR_WARNING,
-                     COLOR_ERROR, FONT_FAMILY, FONT_SIZE_TITLE, FONT_SIZE_HEADER,
-                     FONT_SIZE_BODY, FONT_SIZE_SMALL)
+                     COLOR_ERROR, COLOR_BORDER, FONT_FAMILY, FONT_SIZE_TITLE, 
+                     FONT_SIZE_HEADER, FONT_SIZE_BODY, FONT_SIZE_SMALL)
 from utils.formatting import format_size, format_count, format_date_short
 
+logger = logging.getLogger(__name__)
+
 # Max photos for O(n²) visual dedup — above this, skip visual automatically
-_VISUAL_CAP = 2000
+_VISUAL_CAP = 3000
 
 
 class DuplicateGroupCard(ctk.CTkFrame):
-    def __init__(self, parent, group_paths: list[Path], suggested: Path, on_decision, **kw):
+    def __init__(self, parent, group_key: str, group_paths: list[Path], suggested: Path, on_decision, **kw):
         super().__init__(parent, fg_color=COLOR_CARD, corner_radius=10, **kw)
+        self.group_key = group_key
         self.group_paths = group_paths
         self.suggested = suggested
         self.decision_var = ctk.StringVar(value=str(suggested))
@@ -22,34 +26,45 @@ class DuplicateGroupCard(ctk.CTkFrame):
         self._build()
 
     def _build(self):
+        # Header info
+        header = ctk.CTkFrame(self, fg_color='transparent')
+        header.pack(fill='x', padx=12, pady=(10, 0))
+        
+        ctk.CTkLabel(
+            header, text=f"Grupo: {self.group_key[:8]}...",
+            font=(FONT_FAMILY, FONT_SIZE_SMALL, 'bold'), text_color=COLOR_ACCENT2
+        ).pack(side='left')
+
         # Thumbnails row
         thumb_row = ctk.CTkFrame(self, fg_color='transparent')
-        thumb_row.pack(fill='x', padx=12, pady=(12, 4))
+        thumb_row.pack(fill='x', padx=12, pady=(10, 10))
 
-        for path in self.group_paths[:4]:  # show max 4
+        for path in self.group_paths[:5]:  # show max 5
             col = ctk.CTkFrame(thumb_row, fg_color='transparent')
             col.pack(side='left', padx=6, fill='y')
 
             # Thumbnail
             from gui.widgets.thumbnail_viewer import ThumbnailViewer
-            tv = ThumbnailViewer(col, path, size=(120, 90))
+            tv = ThumbnailViewer(col, path, size=(130, 95))
             tv.pack()
 
             # Metadata below thumb
             try:
-                size = path.stat().st_size
-                size_txt = format_size(size)
+                stat = path.stat()
+                size_txt = format_size(stat.st_size)
             except OSError:
                 size_txt = '—'
 
-            ctk.CTkLabel(
+            name_lbl = ctk.CTkLabel(
                 col, text=path.name,
-                font=(FONT_FAMILY, FONT_SIZE_SMALL), text_color=COLOR_TEXT,
-                wraplength=120, anchor='w'
-            ).pack(anchor='w')
+                font=(FONT_FAMILY, 11), text_color=COLOR_TEXT,
+                wraplength=130, height=32, anchor='n'
+            )
+            name_lbl.pack(anchor='w', pady=(4, 0))
+            
             ctk.CTkLabel(
                 col, text=size_txt,
-                font=(FONT_FAMILY, FONT_SIZE_SMALL), text_color=COLOR_TEXT_DIM
+                font=(FONT_FAMILY, 10), text_color=COLOR_TEXT_DIM
             ).pack(anchor='w')
 
             # Radio button
@@ -57,22 +72,22 @@ class DuplicateGroupCard(ctk.CTkFrame):
             rb = ctk.CTkRadioButton(
                 col, text='Manter' + (' ✓' if is_suggested else ''),
                 variable=self.decision_var, value=str(path),
-                font=(FONT_FAMILY, FONT_SIZE_SMALL),
+                font=(FONT_FAMILY, 11),
                 text_color=COLOR_SUCCESS if is_suggested else COLOR_TEXT,
-                fg_color=COLOR_ACCENT,
-                command=lambda: self._on_decision(self.decision_var.get())
+                fg_color=COLOR_ACCENT, border_color=COLOR_BORDER,
+                command=lambda p=path: self._on_decision(str(p))
             )
-            rb.pack(anchor='w', pady=(4, 0))
+            rb.pack(anchor='w', pady=(6, 0))
 
-        # Keep all option
-        keep_all_row = ctk.CTkFrame(self, fg_color='transparent')
-        keep_all_row.pack(anchor='w', padx=12, pady=(4, 12))
+        # Action row
+        action_row = ctk.CTkFrame(self, fg_color='transparent')
+        action_row.pack(fill='x', padx=12, pady=(0, 10))
 
         ctk.CTkRadioButton(
-            keep_all_row, text='Manter todos',
+            action_row, text='Manter todos os arquivos deste grupo',
             variable=self.decision_var, value='__all__',
-            font=(FONT_FAMILY, FONT_SIZE_SMALL), text_color=COLOR_TEXT_DIM,
-            fg_color=COLOR_ACCENT,
+            font=(FONT_FAMILY, 11), text_color=COLOR_TEXT_DIM,
+            fg_color=COLOR_ACCENT, border_color=COLOR_BORDER,
             command=lambda: self._on_decision('__all__')
         ).pack(side='left')
 
@@ -84,312 +99,257 @@ class DuplicatesView:
         self.main_window = main_window
         self._scanning = False
         self._decisions: dict[str, str] = {}
-        self._render_gen = 0  # incremented to cancel stale batch renders
+        self._render_gen = 0
         self._build()
 
     def _build(self):
+        # Main container with padding
+        self.container = ctk.CTkFrame(self.parent, fg_color='transparent')
+        self.container.pack(fill='both', expand=True, padx=24, pady=24)
+
         # Header
-        header = ctk.CTkFrame(self.parent, fg_color='transparent', height=60)
-        header.pack(fill='x', padx=20, pady=(20, 0))
-        header.pack_propagate(False)
+        header = ctk.CTkFrame(self.container, fg_color='transparent')
+        header.pack(fill='x', pady=(0, 20))
 
+        title_frame = ctk.CTkFrame(header, fg_color='transparent')
+        title_frame.pack(side='left')
+        
         ctk.CTkLabel(
-            header, text='Detecção de Duplicatas',
+            title_frame, text='Detecção de Duplicatas',
             font=(FONT_FAMILY, FONT_SIZE_TITLE, 'bold'), text_color=COLOR_TEXT
-        ).pack(side='left', pady=10)
+        ).pack(anchor='w')
+        
+        ctk.CTkLabel(
+            title_frame, text='Identifique arquivos idênticos ou visualmente similares.',
+            font=(FONT_FAMILY, FONT_SIZE_BODY), text_color=COLOR_TEXT_DIM
+        ).pack(anchor='w')
 
-        ctk.CTkButton(
-            header, text='Detectar Duplicatas',
-            font=(FONT_FAMILY, FONT_SIZE_BODY),
+        self.detect_btn = ctk.CTkButton(
+            header, text='🔍  Detectar Duplicatas',
+            font=(FONT_FAMILY, FONT_SIZE_BODY, 'bold'),
             fg_color=COLOR_ACCENT, hover_color=COLOR_ACCENT2,
-            corner_radius=8, width=180,
+            corner_radius=8, width=200, height=40,
             command=self._start_detection
-        ).pack(side='right', pady=10)
+        )
+        self.detect_btn.pack(side='right')
 
-        # Summary bar
-        self.summary_frame = ctk.CTkFrame(self.parent, fg_color=COLOR_CARD, corner_radius=12)
-        self.summary_frame.pack(fill='x', padx=20, pady=8)
+        # Summary & Actions bar
+        self.summary_frame = ctk.CTkFrame(self.container, fg_color=COLOR_CARD, corner_radius=12, height=60)
+        self.summary_frame.pack(fill='x', pady=(0, 16))
+        self.summary_frame.pack_propagate(False)
 
         self.summary_label = ctk.CTkLabel(
             self.summary_frame,
-            text='Execute a detecção de duplicatas para visualizar resultados.',
+            text='Aguardando início da detecção...',
             font=(FONT_FAMILY, FONT_SIZE_BODY), text_color=COLOR_TEXT_DIM
         )
-        self.summary_label.pack(side='left', padx=20, pady=12)
+        self.summary_label.pack(side='left', padx=20)
 
         self.auto_btn = ctk.CTkButton(
-            self.summary_frame, text='Aceitar sugestões automáticas',
-            font=(FONT_FAMILY, FONT_SIZE_SMALL),
-            fg_color=COLOR_SUCCESS, hover_color='#27ae60',
-            corner_radius=6, width=220, height=32,
+            self.summary_frame, text='Aceitar Sugestões Automáticas',
+            font=(FONT_FAMILY, FONT_SIZE_SMALL, 'bold'),
+            fg_color=COLOR_SUCCESS, hover_color='#059669',
+            corner_radius=8, width=240, height=36,
             command=self._accept_all_suggestions,
             state='disabled'
         )
-        self.auto_btn.pack(side='right', padx=20, pady=12)
+        self.auto_btn.pack(side='right', padx=20)
 
-        # Loading bar (hidden initially)
+        # Progress bar
         self.loading_bar = ctk.CTkProgressBar(
-            self.parent, mode='determinate', height=6,
-            fg_color='#2a2a4a', progress_color=COLOR_ACCENT
+            self.container, mode='determinate', height=8, corner_radius=4,
+            fg_color=COLOR_BORDER, progress_color=COLOR_ACCENT
         )
 
         # Tab view
         self.tabview = ctk.CTkTabview(
-            self.parent, fg_color=COLOR_CARD, corner_radius=12,
-            segmented_button_fg_color=COLOR_CARD,
+            self.container, fg_color=COLOR_CARD, corner_radius=12,
+            segmented_button_fg_color=COLOR_BG,
             segmented_button_selected_color=COLOR_ACCENT,
-            segmented_button_unselected_color=COLOR_CARD
+            segmented_button_unselected_color=COLOR_BG,
+            segmented_button_selected_hover_color=COLOR_ACCENT2
         )
-        self.tabview.pack(fill='both', expand=True, padx=20, pady=(0, 8))
+        self.tabview.pack(fill='both', expand=True)
 
-        self.tab_exact = self.tabview.add('Exatas (SHA-256)')
-        self.tab_visual = self.tabview.add('Visuais (pHash)')
+        self.tab_exact = self.tabview.add('Conteúdo Idêntico')
+        self.tab_visual = self.tabview.add('Visualmente Similares')
 
         self.exact_scroll = ctk.CTkScrollableFrame(self.tab_exact, fg_color='transparent')
-        self.exact_scroll.pack(fill='both', expand=True)
+        self.exact_scroll.pack(fill='both', expand=True, padx=10, pady=10)
 
         self.visual_scroll = ctk.CTkScrollableFrame(self.tab_visual, fg_color='transparent')
-        self.visual_scroll.pack(fill='both', expand=True)
+        self.visual_scroll.pack(fill='both', expand=True, padx=10, pady=10)
 
-        # Navigation
-        nav = ctk.CTkFrame(self.parent, fg_color='transparent')
-        nav.pack(fill='x', padx=20, pady=(0, 16))
+        # Navigation Footer
+        footer = ctk.CTkFrame(self.parent, fg_color='transparent', height=70)
+        footer.pack(side='bottom', fill='x', padx=24, pady=(0, 20))
 
         ctk.CTkButton(
-            nav, text='◀ Voltar: Preview',
-            font=(FONT_FAMILY, FONT_SIZE_BODY, 'bold'),
-            fg_color='transparent', hover_color=COLOR_ACCENT,
-            border_color=COLOR_ACCENT, border_width=1,
+            footer, text='◀  Voltar: Preview',
+            font=(FONT_FAMILY, FONT_SIZE_BODY),
+            fg_color='transparent', hover_color=COLOR_CARD,
+            border_color=COLOR_BORDER, border_width=1,
             corner_radius=8, width=180, height=44,
             command=lambda: self.main_window.navigate('preview')
         ).pack(side='left')
 
-        ctk.CTkButton(
-            nav, text='Próximo: Executar ▶',
+        self.next_btn = ctk.CTkButton(
+            footer, text='Próximo: Executar  ▶',
             font=(FONT_FAMILY, FONT_SIZE_BODY, 'bold'),
             fg_color=COLOR_ACCENT, hover_color=COLOR_ACCENT2,
             corner_radius=8, width=220, height=44,
             command=lambda: self.main_window.navigate('progress')
-        ).pack(side='right')
+        )
+        self.next_btn.pack(side='right')
 
     def _start_detection(self):
         if self._scanning:
             return
-        sources = self.app.app_state.get('sources', [])
+        state = self.app.app_state
+        sources = state.get('sources', [])
         if not sources:
-            self.summary_label.configure(text='Adicione fontes antes de detectar duplicatas.')
+            self.summary_label.configure(text='Configure fontes antes de continuar.', text_color=COLOR_ERROR)
             return
 
+        logger.info("Starting duplicate detection workflow")
         self._scanning = True
-        self.summary_label.configure(text='Detectando duplicatas...')
+        self.detect_btn.configure(state='disabled')
+        self.summary_label.configure(text='Iniciando varredura...', text_color=COLOR_TEXT)
         self.loading_bar.set(0)
-        self.loading_bar.pack(fill='x', padx=20, pady=(0, 4))
-        self._clear_results()  # also increments _render_gen
-
-        EXACT_END = 0.70
+        self.loading_bar.pack(fill='x', pady=(0, 16))
+        self._clear_results()
 
         def worker():
             try:
                 from core.scanner import scan_directory
-                from core.deduplicator import (find_exact_duplicates,
-                                               find_visual_duplicates,
-                                               DuplicateResult, suggest_keeper)
+                from core.deduplicator import find_exact_duplicates, find_visual_duplicates, DuplicateResult, suggest_keeper
                 from utils.constants import PHOTO_EXTENSIONS
 
-                # --- Fase 0: varredura de fontes (com feedback por contagem) ---
                 all_files: list[Path] = []
                 for src in sources:
-                    if src.get('type') == 'cloud':
-                        continue
+                    if src.get('type') == 'cloud': continue
+                    logger.debug(f"Scanning source: {src['path']}")
                     for f in scan_directory(Path(src['path'])):
                         all_files.append(f)
-                        n = len(all_files)
-                        if n % 200 == 0:
-                            self.parent.after(0, lambda c=n: self.summary_label.configure(
-                                text=f'Escaneando fontes: {c} arquivos encontrados...'
+                        if len(all_files) % 500 == 0:
+                            self.parent.after(0, lambda c=len(all_files): self.summary_label.configure(
+                                text=f'Localizados {c} arquivos nas fontes...'
                             ))
 
-                threshold = self.app.app_state.get('phash_threshold', 10)
                 photo_files = [p for p in all_files if p.suffix.lower() in PHOTO_EXTENSIONS]
                 skip_visual = len(photo_files) > _VISUAL_CAP
-
-                # Time-based throttle — max ~10 UI updates/sec regardless of file count
+                
+                # Execution with progress feedback
                 _last_upd = [0.0]
-
                 def on_progress(stage, cur, tot):
-                    if tot == 0:
-                        return
                     now = time.monotonic()
-                    if now - _last_upd[0] < 0.10:
-                        return
+                    if now - _last_upd[0] < 0.1: return
                     _last_upd[0] = now
-                    if stage == 'exact':
-                        val = (cur / tot) * EXACT_END
-                        lbl = f'Duplicatas exatas: {cur}/{tot} ({int(cur / tot * 100)}%)'
-                    else:
-                        val = EXACT_END + (cur / tot) * (1 - EXACT_END)
-                        lbl = f'Duplicatas visuais: {cur}/{tot} ({int(cur / tot * 100)}%)'
-                    self.parent.after(0, lambda v=val, l=lbl: (
-                        self.loading_bar.set(v),
-                        self.summary_label.configure(text=l)
-                    ))
+                    
+                    base = 0.0 if stage == 'exact' else 0.5
+                    val = base + (cur / tot if tot > 0 else 0) * 0.5
+                    lbl = f"{'Exatas' if stage == 'exact' else 'Visuais'}: {cur}/{tot}"
+                    self.parent.after(0, lambda v=val, l=lbl: (self.loading_bar.set(v), self.summary_label.configure(text=l)))
 
                 dup_result = DuplicateResult()
-
-                # --- Fase 1: duplicatas exatas ---
-                # Fase 1a (agrupamento por tamanho) tem callback normal.
-                # Fases 1b/1c (partial+full hash) não têm callback → bar parece travar.
-                # Solução: ao detectar fim da fase 1a, ligar modo indeterminate.
-                _hash_phase_started = [False]
-
-                def exact_cb(cur, tot):
-                    on_progress('exact', cur, tot)
-                    if not _hash_phase_started[0] and tot > 0 and cur >= tot - 1:
-                        _hash_phase_started[0] = True
-                        def _start_indet():
-                            self.loading_bar.configure(mode='indeterminate')
-                            self.loading_bar.start()
-                            self.summary_label.configure(text='Calculando hashes SHA-256...')
-                        self.parent.after(0, _start_indet)
-
-                dup_result.exact = find_exact_duplicates(all_files, exact_cb)
-
-                # Restaurar barra após fase exata
-                def _stop_indet():
-                    self.loading_bar.stop()
-                    self.loading_bar.configure(mode='determinate')
-                    self.loading_bar.set(EXACT_END)
-                self.parent.after(0, _stop_indet)
-
+                
+                # Phase 1: Exact
+                logger.info("Running exact duplicate detection")
+                dup_result.exact = find_exact_duplicates(all_files, lambda c, t: on_progress('exact', c, t))
+                
                 for group in dup_result.exact.values():
-                    if len(group) > 1:
-                        try:
-                            for dup in group[1:]:
-                                dup_result.space_wasted += dup.stat().st_size
-                        except OSError:
-                            pass
-
-                # --- Fase 2: duplicatas visuais ---
-                if skip_visual:
-                    n = len(photo_files)
-                    self.parent.after(0, lambda: self.summary_label.configure(
-                        text=f'Detecção visual ignorada — {n} fotos excedem o limite de {_VISUAL_CAP}.'
-                    ))
-                else:
-                    def visual_cb(cur, tot): on_progress('visual', cur, tot)
                     try:
-                        dup_result.visual = find_visual_duplicates(
-                            all_files, threshold=threshold, callback=visual_cb
-                        )
-                    except Exception:
-                        dup_result.visual = {}
+                        dup_result.space_wasted += sum(p.stat().st_size for p in group[1:])
+                    except OSError: pass
 
-                # Pre-compute suggestions in worker (avoids EXIF reads on main thread)
-                suggestions: dict[str, Path] = {}
-                for k, paths in list(dup_result.exact.items()) + list(dup_result.visual.items()):
+                # Phase 2: Visual
+                if skip_visual:
+                    logger.warning(f"Skipping visual detection: {len(photo_files)} photos exceeds cap")
+                    self.parent.after(0, lambda: self.summary_label.configure(text='Detecção visual ignorada (limite excedido).'))
+                else:
+                    logger.info("Running visual duplicate detection")
+                    dup_result.visual = find_visual_duplicates(all_files, callback=lambda c, t: on_progress('visual', c, t))
+
+                # Phase 3: Suggestions
+                logger.info("Computing suggestions")
+                suggestions = {}
+                for k, paths in {**dup_result.exact, **dup_result.visual}.items():
                     suggestions[k] = suggest_keeper(paths)
 
                 self.app.app_state['dup_result'] = dup_result
                 self.app.app_state['dup_suggestions'] = suggestions
                 self.parent.after(0, lambda: self._populate_results(dup_result, suggestions))
+                
             except Exception as e:
-                self.parent.after(0, lambda msg=str(e): self._on_detection_error(msg))
+                logger.exception("Error during duplicate detection")
+                self.parent.after(0, lambda m=str(e): self._on_detection_error(m))
 
-        threading.Thread(target=worker, daemon=True).start()
+        self.app.executor.submit(worker)
 
     def _clear_results(self):
-        self._render_gen += 1  # cancels any pending _render_batch callbacks
-        for w in self.exact_scroll.winfo_children():
-            w.destroy()
-        for w in self.visual_scroll.winfo_children():
-            w.destroy()
+        self._render_gen += 1
+        for w in self.exact_scroll.winfo_children(): w.destroy()
+        for w in self.visual_scroll.winfo_children(): w.destroy()
 
     def _on_detection_error(self, msg: str):
         self._scanning = False
+        self.detect_btn.configure(state='normal')
         self.loading_bar.pack_forget()
-        self.summary_label.configure(
-            text=f'Erro na detecção: {msg}', text_color=COLOR_ERROR
-        )
+        self.summary_label.configure(text=f'Erro: {msg}', text_color=COLOR_ERROR)
 
-    def _populate_results(self, dup_result, suggestions: dict = None):
+    def _populate_results(self, dup_result, suggestions):
         self._scanning = False
-        self.loading_bar.set(1.0)
+        self.detect_btn.configure(state='normal')
         self.loading_bar.pack_forget()
         self._decisions.clear()
 
-        if suggestions is None:
-            suggestions = {}
-
-        exact_count = len(dup_result.exact)
-        visual_count = len(dup_result.visual)
-        total_groups = exact_count + visual_count
-
+        total_groups = len(dup_result.exact) + len(dup_result.visual)
         self.main_window.update_dup_badge(total_groups)
-
-        dup_files = sum(len(g) for g in dup_result.exact.values()) + \
-                    sum(len(g) for g in dup_result.visual.values())
-
-        self._summary_text = (
-            f'{total_groups} grupos  •  {dup_files} arquivos  •  '
-            f'{format_size(dup_result.space_wasted)} liberáveis'
+        
+        waste = format_size(dup_result.space_wasted)
+        self.summary_label.configure(
+            text=f'Encontrados {total_groups} grupos de duplicatas. Economia potencial: {waste}',
+            text_color=COLOR_TEXT
         )
-        self.summary_label.configure(text=self._summary_text)
-        self.auto_btn.configure(state='normal')
-
-        exact_items = list(dup_result.exact.items())
-        visual_items = list(dup_result.visual.items())
-
-        if not exact_items:
-            ctk.CTkLabel(
-                self.exact_scroll, text='Nenhuma duplicata exata encontrada.',
-                text_color=COLOR_TEXT_DIM, font=(FONT_FAMILY, FONT_SIZE_BODY)
-            ).pack(pady=30)
-
-        if not visual_items:
-            ctk.CTkLabel(
-                self.visual_scroll, text='Nenhuma duplicata visual encontrada.',
-                text_color=COLOR_TEXT_DIM, font=(FONT_FAMILY, FONT_SIZE_BODY)
-            ).pack(pady=30)
+        self.auto_btn.configure(state='normal' if total_groups > 0 else 'disabled')
 
         gen = self._render_gen
-        self._render_batch(exact_items, self.exact_scroll, 0, suggestions, gen=gen)
-        self._render_batch(visual_items, self.visual_scroll, 0, suggestions, gen=gen)
+        self._render_batch(list(dup_result.exact.items()), self.exact_scroll, 0, suggestions, gen=gen)
+        self._render_batch(list(dup_result.visual.items()), self.visual_scroll, 0, suggestions, gen=gen)
 
-    def _render_batch(self, items, container, start, suggestions: dict, batch=4, gen=0):
-        """Render `batch` cards then yield to the event loop — keeps UI responsive."""
-        if gen != self._render_gen:
-            return  # cancelled — navigated away or new detection started
+    def _render_batch(self, items, container, start, suggestions, batch=5, gen=0):
+        if gen != self._render_gen: return
+        
         end = min(start + batch, len(items))
         for i in range(start, end):
-            hash_key, paths = items[i]
-            suggested = suggestions.get(hash_key, paths[0])
+            k, paths = items[i]
             card = DuplicateGroupCard(
-                container, paths, suggested,
-                on_decision=lambda d, k=hash_key: self._record_decision(k, d)
+                container, k, paths, suggestions.get(k, paths[0]),
+                on_decision=lambda d, gk=k: self._record_decision(gk, d)
             )
-            card.pack(fill='x', pady=6, padx=4)
+            card.pack(fill='x', pady=8, padx=4)
+            
         if end < len(items):
-            self.parent.after(50, lambda s=end: self._render_batch(
-                items, container, s, suggestions, batch, gen
-            ))
+            self.parent.after(10, lambda: self._render_batch(items, container, end, suggestions, batch, gen))
 
     def _record_decision(self, group_key: str, decision: str):
         self._decisions[group_key] = decision
+        logger.debug(f"Decision for {group_key}: {decision}")
 
     def _accept_all_suggestions(self):
         dup = self.app.app_state.get('dup_result')
-        if not dup:
-            return
-        from core.deduplicator import suggest_keeper
-        for k, paths in dup.exact.items():
-            self._decisions[k] = str(suggest_keeper(paths))
-        for k, paths in dup.visual.items():
-            self._decisions[k] = str(suggest_keeper(paths))
-        self.summary_label.configure(text='Sugestões automáticas aplicadas.')
+        sugg = self.app.app_state.get('dup_suggestions', {})
+        if not dup: return
+        
+        for k in {**dup.exact, **dup.visual}:
+            self._decisions[k] = str(sugg.get(k))
+            
+        self.summary_label.configure(text='Todas as sugestões foram aceitas.', text_color=COLOR_SUCCESS)
+        logger.info("User accepted all automated suggestions")
 
     def refresh(self):
+        if self._scanning: return
         dup = self.app.app_state.get('dup_result')
         if dup:
             self._clear_results()
-            suggestions = self.app.app_state.get('dup_suggestions', {})
-            self._populate_results(dup, suggestions)
+            self._populate_results(dup, self.app.app_state.get('dup_suggestions', {}))
