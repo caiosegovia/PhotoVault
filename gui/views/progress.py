@@ -12,6 +12,7 @@ from utils.formatting import format_size, format_count, format_speed, format_eta
 def _record_to_index(ops, destination) -> None:
     """Record newly copied files into destination_index (best-effort, runs in daemon thread)."""
     try:
+        from core.organizer import _hash_file
         from core.database import bulk_save_destination_records
         records = []
         for op in ops:
@@ -19,11 +20,14 @@ def _record_to_index(ops, destination) -> None:
                 continue
             try:
                 stat = op.dst.stat()
+                sha256 = getattr(op, 'sha256', None)
+                if not sha256:
+                    sha256 = _hash_file(op.dst)
                 records.append({
                     'path': str(op.dst),
                     'size': stat.st_size,
                     'mtime': stat.st_mtime,
-                    'sha256': getattr(op, 'sha256', '') or '',
+                    'sha256': sha256,
                 })
             except OSError:
                 pass
