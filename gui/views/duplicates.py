@@ -169,7 +169,7 @@ class DuplicatesView:
             font=(FONT_FAMILY, FONT_SIZE_BODY, 'bold'),
             fg_color=COLOR_ACCENT, hover_color=COLOR_ACCENT2,
             corner_radius=8, width=200, height=40,
-            command=lambda: self.main_window.navigate('progress')
+            command=self._continue
         ).pack(side='right')
 
     def _start_detection(self):
@@ -386,6 +386,22 @@ class DuplicatesView:
         for k, paths in dup.visual.items():
             self._decisions[k] = str(suggest_keeper(paths))
         self.summary_label.configure(text='Sugestões automáticas aplicadas.')
+
+    def _continue(self):
+        self._apply_decisions_to_plan()
+        self.main_window.navigate('progress')
+
+    def _apply_decisions_to_plan(self):
+        plan = self.app.app_state.get('plan')
+        dup = self.app.app_state.get('dup_result')
+        if not plan or not dup or not self._decisions:
+            return
+
+        groups = {}
+        groups.update(dup.exact)
+        groups.update(dup.visual)
+        from core.organizer import apply_duplicate_decisions
+        apply_duplicate_decisions(plan, groups, self._decisions)
 
     def refresh(self):
         dup = self.app.app_state.get('dup_result')

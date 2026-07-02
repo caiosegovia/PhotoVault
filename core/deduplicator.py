@@ -13,18 +13,18 @@ class DuplicateResult:
     space_wasted: int = 0
 
 
-def hash_file_partial(path: Path, chunk_size: int = PARTIAL_HASH_CHUNK) -> str:
+def hash_file_partial(path: Path, chunk_size: int = PARTIAL_HASH_CHUNK) -> Optional[str]:
     """SHA-256 of first chunk_size bytes."""
     h = hashlib.sha256()
     try:
         with open(path, 'rb') as f:
             h.update(f.read(chunk_size))
     except OSError:
-        pass
+        return None
     return h.hexdigest()
 
 
-def hash_file_full(path: Path) -> str:
+def hash_file_full(path: Path) -> Optional[str]:
     """Full SHA-256 hash of file."""
     h = hashlib.sha256()
     try:
@@ -32,7 +32,7 @@ def hash_file_full(path: Path) -> str:
             for chunk in iter(lambda: f.read(65536), b''):
                 h.update(chunk)
     except OSError:
-        pass
+        return None
     return h.hexdigest()
 
 
@@ -80,6 +80,8 @@ def find_exact_duplicates(
     for group in candidates:
         for p in group:
             ph = hash_file_partial(p)
+            if ph is None:
+                continue
             by_partial.setdefault(ph, []).append(p)
 
     candidates2 = [g for g in by_partial.values() if len(g) > 1]
@@ -89,6 +91,8 @@ def find_exact_duplicates(
     for group in candidates2:
         for p in group:
             fh = hash_file_full(p)
+            if fh is None:
+                continue
             by_full.setdefault(fh, []).append(p)
 
     return {h: g for h, g in by_full.items() if len(g) > 1}

@@ -334,3 +334,43 @@ def execute_plan(
                     pass
 
     return result
+
+
+def apply_duplicate_decisions(
+    plan: OrganizationPlan,
+    duplicate_groups: dict[str, list[Path]],
+    decisions: dict[str, str],
+) -> int:
+    """
+    Apply duplicate review choices to a plan.
+
+    decisions maps duplicate group keys to either a keeper path string or '__all__'.
+    Returns the number of operations changed to skip.
+    """
+    if not decisions:
+        return 0
+
+    skip_paths: set[Path] = set()
+    for group_key, decision in decisions.items():
+        if decision == '__all__':
+            continue
+        group = duplicate_groups.get(group_key)
+        if not group:
+            continue
+        keeper = Path(decision)
+        for path in group:
+            if path != keeper:
+                skip_paths.add(path)
+
+    if not skip_paths:
+        return 0
+
+    changed = 0
+    for op in plan.operations:
+        if op.src in skip_paths and op.action != 'skip':
+            op.action = 'skip'
+            op.status = 'skipped'
+            op.error = 'Duplicata marcada para ignorar'
+            changed += 1
+
+    return changed
