@@ -1,17 +1,31 @@
 import customtkinter as ctk
-from gui.app import (PhotoVaultApp, COLOR_SIDEBAR, COLOR_BG, COLOR_ACCENT,
-                     COLOR_TEXT, COLOR_TEXT_DIM, COLOR_BORDER, COLOR_ACCENT2,
-                     FONT_FAMILY, FONT_SIZE_BODY, FONT_SIZE_SMALL)
+
+from gui.app import PhotoVaultApp
+from gui.theme import (
+    ACCENT,
+    APP_BG,
+    BORDER,
+    FONT_FAMILY,
+    FONT_SIZE_BODY,
+    FONT_SIZE_SMALL,
+    SIDEBAR_BG,
+    SURFACE,
+    SURFACE_ALT,
+    TEXT,
+    TEXT_MUTED,
+)
+from utils.formatting import format_count
+
 
 NAV_ITEMS = [
-    ('dashboard',   'Dashboard',    '⊞'),
-    ('sources',     'Fontes',       '◈'),
-    ('rules',       'Regras',       '⚙'),
-    ('preview',     'Preview',      '◎'),
-    ('duplicates',  'Duplicatas',   '⧉'),
-    ('progress',    'Executar',     '▶'),
-    ('report',      'Relatório',    '▦'),
-    ('settings',    'Configurações','⚿'),
+    ("dashboard", "Dashboard"),
+    ("sources", "Fontes"),
+    ("rules", "Regras"),
+    ("preview", "Preview"),
+    ("duplicates", "Duplicatas"),
+    ("progress", "Executar"),
+    ("report", "Relatorio"),
+    ("settings", "Ajustes"),
 ]
 
 
@@ -21,83 +35,109 @@ class MainWindow:
         self.current_view = None
         self.views: dict = {}
         self.nav_buttons: dict = {}
-        self.dup_badge_var = ctk.StringVar(value='')
+        self.dup_badge_var = ctk.StringVar(value="")
+        self.summary_var = ctk.StringVar(value="Nenhuma sessao configurada")
+        self.step_var = ctk.StringVar(value="")
 
         self._build_layout()
         self._load_views()
-        self.navigate('dashboard')
+        self.navigate("dashboard")
 
     def _build_layout(self):
-        # Sidebar
-        self.sidebar = ctk.CTkFrame(
-            self.app, width=210, corner_radius=0,
-            fg_color=COLOR_SIDEBAR
-        )
-        self.sidebar.pack(side='left', fill='y')
+        self.sidebar = ctk.CTkFrame(self.app, width=188, corner_radius=0, fg_color=SIDEBAR_BG)
+        self.sidebar.pack(side="left", fill="y")
         self.sidebar.pack_propagate(False)
 
-        # Logo area
-        logo_frame = ctk.CTkFrame(self.sidebar, fg_color='transparent', height=80)
-        logo_frame.pack(fill='x', pady=(20, 10))
-        logo_frame.pack_propagate(False)
+        brand = ctk.CTkFrame(self.sidebar, fg_color="transparent")
+        brand.pack(fill="x", padx=16, pady=(20, 18))
+        ctk.CTkLabel(
+            brand,
+            text="PhotoVault",
+            font=(FONT_FAMILY, 18, "bold"),
+            text_color=TEXT,
+            anchor="w",
+        ).pack(anchor="w")
+        ctk.CTkLabel(
+            brand,
+            text="Curadoria local de midia",
+            font=(FONT_FAMILY, FONT_SIZE_SMALL),
+            text_color=TEXT_MUTED,
+            anchor="w",
+        ).pack(anchor="w", pady=(3, 0))
+
+        self.nav_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
+        self.nav_frame.pack(fill="x", padx=10)
+        for index, (view_id, label) in enumerate(NAV_ITEMS, start=1):
+            self._create_nav_button(index, view_id, label)
+
+        footer = ctk.CTkFrame(self.sidebar, fg_color="transparent")
+        footer.pack(side="bottom", fill="x", padx=16, pady=16)
+        ctk.CTkLabel(
+            footer,
+            text="v1.0.0",
+            font=(FONT_FAMILY, FONT_SIZE_SMALL),
+            text_color=TEXT_MUTED,
+            anchor="w",
+        ).pack(anchor="w")
+
+        shell = ctk.CTkFrame(self.app, corner_radius=0, fg_color=APP_BG)
+        shell.pack(side="right", fill="both", expand=True)
+
+        topbar = ctk.CTkFrame(shell, height=64, corner_radius=0, fg_color=APP_BG)
+        topbar.pack(fill="x")
+        topbar.pack_propagate(False)
 
         ctk.CTkLabel(
-            logo_frame, text='📷', font=(FONT_FAMILY, 28)
-        ).pack(pady=(10, 0))
+            topbar,
+            textvariable=self.step_var,
+            font=(FONT_FAMILY, FONT_SIZE_BODY, "bold"),
+            text_color=TEXT,
+            anchor="w",
+        ).pack(side="left", padx=(24, 12), pady=18)
+
         ctk.CTkLabel(
-            logo_frame, text='PhotoVault',
-            font=(FONT_FAMILY, 14, 'bold'), text_color=COLOR_ACCENT2
-        ).pack()
+            topbar,
+            textvariable=self.summary_var,
+            font=(FONT_FAMILY, FONT_SIZE_SMALL),
+            text_color=TEXT_MUTED,
+            anchor="e",
+        ).pack(side="right", padx=24, pady=18)
 
-        # Separator
-        ctk.CTkFrame(self.sidebar, height=1, fg_color=COLOR_BORDER).pack(fill='x', padx=15, pady=10)
+        ctk.CTkFrame(shell, height=1, fg_color=BORDER).pack(fill="x")
 
-        # Nav buttons
-        self.nav_frame = ctk.CTkFrame(self.sidebar, fg_color='transparent')
-        self.nav_frame.pack(fill='x', padx=8)
+        self.content = ctk.CTkFrame(shell, corner_radius=0, fg_color=APP_BG)
+        self.content.pack(fill="both", expand=True)
 
-        for view_id, label, icon in NAV_ITEMS:
-            self._create_nav_button(view_id, label, icon)
-
-        # Bottom: version label
-        ctk.CTkLabel(
-            self.sidebar, text='v1.0.0',
-            font=(FONT_FAMILY, FONT_SIZE_SMALL), text_color=COLOR_TEXT_DIM
-        ).pack(side='bottom', pady=15)
-
-        # Content area
-        self.content = ctk.CTkFrame(
-            self.app, corner_radius=0, fg_color=COLOR_BG
-        )
-        self.content.pack(side='right', fill='both', expand=True)
-
-    def _create_nav_button(self, view_id: str, label: str, icon: str):
-        frame = ctk.CTkFrame(self.nav_frame, fg_color='transparent')
-        frame.pack(fill='x', pady=2)
+    def _create_nav_button(self, index: int, view_id: str, label: str):
+        row = ctk.CTkFrame(self.nav_frame, fg_color="transparent")
+        row.pack(fill="x", pady=2)
 
         btn = ctk.CTkButton(
-            frame,
-            text=f"  {icon}  {label}",
-            anchor='w',
+            row,
+            text=f"{index:02d}  {label}",
+            anchor="w",
             font=(FONT_FAMILY, FONT_SIZE_BODY),
-            fg_color='transparent',
-            text_color=COLOR_TEXT_DIM,
-            hover_color=COLOR_ACCENT,
+            fg_color="transparent",
+            text_color=TEXT_MUTED,
+            hover_color=SURFACE_ALT,
             corner_radius=8,
-            height=40,
-            command=lambda vid=view_id: self.navigate(vid)
+            height=38,
+            command=lambda vid=view_id: self.navigate(vid),
         )
-        btn.pack(fill='x')
+        btn.pack(fill="x")
 
-        # Badge for duplicates
-        if view_id == 'duplicates':
+        if view_id == "duplicates":
             badge = ctk.CTkLabel(
-                frame, textvariable=self.dup_badge_var,
-                fg_color=COLOR_ACCENT, text_color='white',
-                corner_radius=10, width=24, height=20,
-                font=(FONT_FAMILY, FONT_SIZE_SMALL, 'bold')
+                row,
+                textvariable=self.dup_badge_var,
+                fg_color=ACCENT,
+                text_color="#04110f",
+                corner_radius=9,
+                width=22,
+                height=18,
+                font=(FONT_FAMILY, FONT_SIZE_SMALL, "bold"),
             )
-            badge.place(relx=1.0, rely=0.5, anchor='e', x=-8)
+            badge.place(relx=1.0, rely=0.5, anchor="e", x=-8)
 
         self.nav_buttons[view_id] = btn
 
@@ -112,44 +152,60 @@ class MainWindow:
         from gui.views.settings import SettingsView
 
         view_classes = {
-            'dashboard': DashboardView,
-            'sources': SourcesView,
-            'rules': RulesView,
-            'preview': PreviewView,
-            'duplicates': DuplicatesView,
-            'progress': ProgressView,
-            'report': ReportView,
-            'settings': SettingsView,
+            "dashboard": DashboardView,
+            "sources": SourcesView,
+            "rules": RulesView,
+            "preview": PreviewView,
+            "duplicates": DuplicatesView,
+            "progress": ProgressView,
+            "report": ReportView,
+            "settings": SettingsView,
         }
 
         for view_id, cls in view_classes.items():
-            frame = ctk.CTkFrame(self.content, fg_color=COLOR_BG, corner_radius=0)
+            frame = ctk.CTkFrame(self.content, fg_color=APP_BG, corner_radius=0)
             view = cls(frame, self.app, self)
             self.views[view_id] = (frame, view)
 
     def navigate(self, view_id: str):
-        # Hide all views
-        for vid, (frame, view) in self.views.items():
+        for frame, _view in self.views.values():
             frame.pack_forget()
 
-        # Update nav button styles
         for vid, btn in self.nav_buttons.items():
             if vid == view_id:
-                btn.configure(fg_color=COLOR_ACCENT, text_color='white')
+                btn.configure(fg_color=SURFACE, text_color=TEXT)
             else:
-                btn.configure(fg_color='transparent', text_color=COLOR_TEXT_DIM)
+                btn.configure(fg_color="transparent", text_color=TEXT_MUTED)
 
-        # Show selected view
         frame, view = self.views[view_id]
-        frame.pack(fill='both', expand=True)
+        frame.pack(fill="both", expand=True)
         self.current_view = view_id
+        self._refresh_topbar(view_id)
 
-        # Refresh view if it has a refresh method
-        if hasattr(view, 'refresh'):
+        if hasattr(view, "refresh"):
             view.refresh()
 
+    def _refresh_topbar(self, view_id: str):
+        labels = {vid: label for vid, label in NAV_ITEMS}
+        self.step_var.set(labels.get(view_id, "PhotoVault"))
+
+        state = self.app.app_state
+        sources = state.get("sources", [])
+        destination = state.get("destination")
+        plan = state.get("plan")
+        source_count = len(sources)
+        total = 0
+        for src in sources:
+            total += src.get("total", 0)
+
+        parts = [f"{source_count} fonte{'s' if source_count != 1 else ''}"]
+        if total:
+            parts.append(f"{format_count(total)} arquivos")
+        if destination:
+            parts.append(f"Destino: {destination}")
+        if plan:
+            parts.append(f"Plano: {format_count(plan.total)} itens")
+        self.summary_var.set("  |  ".join(parts) if parts else "Nenhuma sessao configurada")
+
     def update_dup_badge(self, count: int):
-        if count > 0:
-            self.dup_badge_var.set(str(count))
-        else:
-            self.dup_badge_var.set('')
+        self.dup_badge_var.set(str(count) if count > 0 else "")
