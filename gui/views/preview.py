@@ -40,7 +40,7 @@ class PreviewView:
         # Loading bar (hidden initially)
         self.loading_bar = ctk.CTkProgressBar(
             self.parent, mode='determinate', height=6,
-            fg_color='#2a2a4a', progress_color=COLOR_ACCENT
+            fg_color=COLOR_BORDER, progress_color=COLOR_ACCENT
         )
 
         # Tree area
@@ -52,8 +52,8 @@ class PreviewView:
         style.theme_use('clam')
         style.configure(
             'PhotoVault.Treeview',
-            background='#1e2040', foreground=COLOR_TEXT,
-            fieldbackground='#1e2040', borderwidth=0,
+            background=COLOR_CARD, foreground=COLOR_TEXT,
+            fieldbackground=COLOR_CARD, borderwidth=0,
             font=(FONT_FAMILY, FONT_SIZE_BODY)
         )
         style.configure(

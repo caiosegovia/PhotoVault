@@ -178,16 +178,16 @@ class ReportView:
 <meta charset="UTF-8">
 <title>PhotoVault - Relatório</title>
 <style>
-body {{ font-family: 'Segoe UI', sans-serif; background: #1a1a2e; color: #e0e0e0; padding: 40px; }}
-h1 {{ color: #14a085; }} h2 {{ color: #0d7377; border-bottom: 1px solid #2a2a4a; padding-bottom: 8px; }}
-.card {{ background: #0f3460; border-radius: 12px; padding: 20px; margin: 10px 0; }}
+body {{ font-family: 'Segoe UI', sans-serif; background: #0b0b0d; color: #f4f4f5; padding: 40px; }}
+h1 {{ color: #ef4444; }} h2 {{ color: #ef4444; border-bottom: 1px solid #303035; padding-bottom: 8px; }}
+.card {{ background: #18181b; border: 1px solid #303035; border-radius: 8px; padding: 20px; margin: 10px 0; }}
 .grid {{ display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }}
 .stat {{ text-align: center; }}
-.stat .value {{ font-size: 2em; font-weight: bold; color: #14a085; }}
-.stat .label {{ color: #888; font-size: 0.9em; }}
+.stat .value {{ font-size: 2em; font-weight: bold; color: #ef4444; }}
+.stat .label {{ color: #a1a1aa; font-size: 0.9em; }}
 table {{ width: 100%; border-collapse: collapse; }}
-th {{ background: #16213e; padding: 10px; text-align: left; }}
-td {{ padding: 8px; border-bottom: 1px solid #2a2a4a; }}
+th {{ background: #242428; padding: 10px; text-align: left; }}
+td {{ padding: 8px; border-bottom: 1px solid #303035; }}
 </style>
 </head>
 <body>

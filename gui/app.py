@@ -1,27 +1,39 @@
 import customtkinter as ctk
 from utils.constants import APP_NAME, WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT
+from gui.theme import (
+    ACCENT,
+    ACCENT_HOVER,
+    APP_BG,
+    BORDER,
+    ERROR,
+    FONT_FAMILY,
+    FONT_SIZE_BODY,
+    FONT_SIZE_HEADER,
+    FONT_SIZE_SMALL,
+    FONT_SIZE_TITLE,
+    SIDEBAR_BG,
+    SUCCESS,
+    SURFACE,
+    TEXT,
+    TEXT_MUTED,
+    WARNING,
+)
 
 # Theme settings
 ctk.set_appearance_mode("dark")
-ctk.set_default_color_theme("blue")
+ctk.set_default_color_theme("dark-blue")
 
-COLOR_BG = "#1a1a2e"
-COLOR_SIDEBAR = "#16213e"
-COLOR_CARD = "#0f3460"
-COLOR_ACCENT = "#0d7377"
-COLOR_ACCENT2 = "#14a085"
-COLOR_TEXT = "#e0e0e0"
-COLOR_TEXT_DIM = "#888888"
-COLOR_SUCCESS = "#2ecc71"
-COLOR_WARNING = "#f39c12"
-COLOR_ERROR = "#e74c3c"
-COLOR_BORDER = "#2a2a4a"
-
-FONT_FAMILY = "Segoe UI" if __import__('platform').system() == 'Windows' else "Inter"
-FONT_SIZE_TITLE = 20
-FONT_SIZE_HEADER = 16
-FONT_SIZE_BODY = 13
-FONT_SIZE_SMALL = 11
+COLOR_BG = APP_BG
+COLOR_SIDEBAR = SIDEBAR_BG
+COLOR_CARD = SURFACE
+COLOR_ACCENT = ACCENT
+COLOR_ACCENT2 = ACCENT_HOVER
+COLOR_TEXT = TEXT
+COLOR_TEXT_DIM = TEXT_MUTED
+COLOR_SUCCESS = SUCCESS
+COLOR_WARNING = WARNING
+COLOR_ERROR = ERROR
+COLOR_BORDER = BORDER
 
 
 class PhotoVaultApp(ctk.CTk):
@@ -41,6 +53,7 @@ class PhotoVaultApp(ctk.CTk):
             'scan_results': None,   # count_files result
             'plan': None,           # OrganizationPlan
             'dup_result': None,     # DuplicateResult
+            'dup_device_info': {},  # path -> detected device fields
             'session': {},
             'phash_threshold': 10,
             'include_no_date': True,

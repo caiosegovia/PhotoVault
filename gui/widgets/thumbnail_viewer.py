@@ -1,66 +1,64 @@
-import threading
-import customtkinter as ctk
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+
+import customtkinter as ctk
 from PIL import Image
+
+from core.thumbnail_cache import ensure_thumbnail, get_cached_thumbnail
+from gui.theme import ACCENT, SURFACE_MUTED, TEXT_MUTED
+
+_THUMBNAIL_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="thumb")
+_VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".m4v", ".3gp", ".wmv", ".mts", ".m2ts"}
 
 
 class ThumbnailViewer(ctk.CTkFrame):
     def __init__(self, parent, path: Path, size: tuple = (160, 120), **kw):
-        super().__init__(parent, fg_color='#111122', corner_radius=8, **kw)
+        super().__init__(parent, fg_color=SURFACE_MUTED, corner_radius=8, **kw)
         self.path = path
         self.size = size
         self._photo = None
+        self._is_video = path.suffix.lower() in _VIDEO_EXTENSIONS
 
         self.configure(width=size[0], height=size[1])
         self.pack_propagate(False)
 
-        self.label = ctk.CTkLabel(self, text='⟳', font=('Segoe UI', 20), text_color='#888')
+        self.label = ctk.CTkLabel(self, text="...", font=("Segoe UI", 20), text_color=TEXT_MUTED)
         self.label.pack(expand=True)
 
-        threading.Thread(target=self._load, daemon=True).start()
+        _THUMBNAIL_POOL.submit(self._load)
 
     def _load(self):
         try:
-            ext = self.path.suffix.lower()
-            if ext in {'.mp4', '.mov', '.avi', '.mkv', '.m4v', '.3gp', '.wmv', '.mts', '.m2ts'}:
-                img = self._video_thumbnail()
-            else:
-                img = Image.open(self.path)
-
-            if img:
-                img.thumbnail(self.size, Image.LANCZOS)
-                # Pad to exact size
-                bg = Image.new('RGB', self.size, (17, 17, 34))
-                offset = ((self.size[0] - img.width) // 2, (self.size[1] - img.height) // 2)
-                bg.paste(img, offset)
-                self._photo = ctk.CTkImage(light_image=bg, dark_image=bg, size=self.size)
-                self.after(0, self._show)
+            thumb_path = get_cached_thumbnail(self.path) or ensure_thumbnail(self.path)
+            if not thumb_path:
+                self.after(0, self._show_placeholder)
+                return
+            with Image.open(thumb_path) as source:
+                preview = source.copy()
+            self.after(0, lambda image=preview: self._show(image))
         except Exception:
-            self.after(0, lambda: self.label.configure(text='🖼', font=('Segoe UI', 24)))
+            self.after(0, self._show_placeholder)
 
-    def _video_thumbnail(self):
-        """Try to extract a video frame thumbnail."""
+    def _show(self, image):
         try:
-            import subprocess, tempfile, os
-            with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tmp:
-                tmp_path = tmp.name
+            self._photo = ctk.CTkImage(light_image=image, dark_image=image, size=self.size)
+            self.label.configure(image=self._photo, text="")
+            if self._is_video:
+                ctk.CTkLabel(
+                    self,
+                    text="VIDEO",
+                    font=("Segoe UI", 9, "bold"),
+                    text_color="white",
+                    fg_color=ACCENT,
+                    corner_radius=5,
+                    height=18,
+                ).place(relx=0.04, rely=0.07, anchor="nw")
+        except Exception:
+            self._show_placeholder()
 
-            result = subprocess.run(
-                ['ffmpeg', '-i', str(self.path), '-ss', '00:00:01',
-                 '-vframes', '1', '-y', tmp_path],
-                capture_output=True, timeout=10
-            )
-            if result.returncode == 0 and os.path.exists(tmp_path):
-                img = Image.open(tmp_path)
-                os.unlink(tmp_path)
-                return img
+    def _show_placeholder(self):
+        label = "VIDEO" if self._is_video else "SEM PREVIEW"
+        try:
+            self.label.configure(text=label, image=None, font=("Segoe UI", 12, "bold"), text_color=TEXT_MUTED)
         except Exception:
             pass
-        return None
-
-    def _show(self):
-        if self._photo:
-            try:
-                self.label.configure(image=self._photo, text='')
-            except Exception:
-                pass

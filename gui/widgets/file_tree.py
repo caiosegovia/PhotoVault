@@ -2,6 +2,7 @@ import customtkinter as ctk
 import tkinter as tk
 from tkinter import ttk
 from utils.formatting import format_size, format_count
+from gui.theme import ACCENT, FONT_FAMILY, SUCCESS, SURFACE, SURFACE_ALT, TEXT, TEXT_MUTED, WARNING
 
 
 class FileTree(ctk.CTkFrame):
@@ -14,16 +15,16 @@ class FileTree(ctk.CTkFrame):
         style.theme_use('clam')
         style.configure(
             'FileTree.Treeview',
-            background='#1e2040', foreground='#e0e0e0',
-            fieldbackground='#1e2040', borderwidth=0,
-            font=('Segoe UI', 11)
+            background=SURFACE, foreground=TEXT,
+            fieldbackground=SURFACE, borderwidth=0,
+            font=(FONT_FAMILY, 11)
         )
         style.configure(
             'FileTree.Treeview.Heading',
-            background='#0f3460', foreground='#888888',
-            font=('Segoe UI', 10, 'bold')
+            background=SURFACE_ALT, foreground=TEXT_MUTED,
+            font=(FONT_FAMILY, 10, 'bold')
         )
-        style.map('FileTree.Treeview', background=[('selected', '#0d7377')])
+        style.map('FileTree.Treeview', background=[('selected', ACCENT)])
 
         frame = ctk.CTkFrame(self, fg_color='transparent')
         frame.pack(fill='both', expand=True)
@@ -51,10 +52,10 @@ class FileTree(ctk.CTkFrame):
         frame.rowconfigure(0, weight=1)
         frame.columnconfigure(0, weight=1)
 
-        self.tree.tag_configure('new', foreground='#2ecc71')
-        self.tree.tag_configure('conflict', foreground='#f39c12')
-        self.tree.tag_configure('exists', foreground='#888888')
-        self.tree.tag_configure('folder', foreground='#14a085')
+        self.tree.tag_configure('new', foreground=SUCCESS)
+        self.tree.tag_configure('conflict', foreground=WARNING)
+        self.tree.tag_configure('exists', foreground=TEXT_MUTED)
+        self.tree.tag_configure('folder', foreground=ACCENT)
 
     def load_plan(self, plan):
         self.clear()

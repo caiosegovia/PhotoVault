@@ -16,6 +16,7 @@ env/
 # PyInstaller build artifacts
 build/
 dist/
+dist_perf/
 *.spec.bak
 
 # Database & user data

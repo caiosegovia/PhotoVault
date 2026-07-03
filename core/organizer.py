@@ -1,7 +1,7 @@
 import hashlib
 import shutil
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Callable
@@ -325,12 +325,66 @@ def execute_plan(
             if callback:
                 callback(idx, plan.total, op.src, op)
 
+        max_pending = max(workers * 2, workers)
+        op_iter = iter(operations)
+        pending = set()
         with ThreadPoolExecutor(max_workers=workers) as executor:
-            futures = [executor.submit(run_op, op) for op in operations]
-            for future in as_completed(futures):
-                try:
-                    future.result()
-                except Exception:
-                    pass
+            while True:
+                if stop_event and stop_event.is_set():
+                    break
+                while len(pending) < max_pending:
+                    try:
+                        op = next(op_iter)
+                    except StopIteration:
+                        break
+                    pending.add(executor.submit(run_op, op))
+                if not pending:
+                    break
+                done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                for future in done:
+                    try:
+                        future.result()
+                    except Exception:
+                        pass
 
     return result
+
+
+def apply_duplicate_decisions(
+    plan: OrganizationPlan,
+    duplicate_groups: dict[str, list[Path]],
+    decisions: dict[str, str],
+) -> int:
+    """
+    Apply duplicate review choices to a plan.
+
+    decisions maps duplicate group keys to either a keeper path string or '__all__'.
+    Returns the number of operations changed to skip.
+    """
+    if not decisions:
+        return 0
+
+    skip_paths: set[Path] = set()
+    for group_key, decision in decisions.items():
+        if decision == '__all__':
+            continue
+        group = duplicate_groups.get(group_key)
+        if not group:
+            continue
+        keeper = Path(decision)
+        for path in group:
+            if path != keeper:
+                skip_paths.add(path)
+
+    if not skip_paths:
+        return 0
+
+    changed = 0
+    for op in plan.operations:
+        if op.src in skip_paths and op.action != 'skip':
+            op.action = 'skip'
+            op.status = 'skipped'
+            op.error = 'Duplicata marcada para ignorar'
+            changed += 1
+
+    return changed
