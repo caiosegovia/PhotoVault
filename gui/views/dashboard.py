@@ -5,7 +5,7 @@ from datetime import datetime
 import customtkinter as ctk
 from gui.app import (COLOR_CARD, COLOR_TEXT, COLOR_TEXT_DIM, COLOR_ACCENT2,
                      COLOR_ACCENT, COLOR_BG, COLOR_SUCCESS, COLOR_WARNING,
-                     COLOR_ERROR, COLOR_SIDEBAR, FONT_FAMILY, FONT_SIZE_TITLE,
+                     COLOR_ERROR, COLOR_SIDEBAR, COLOR_BORDER, FONT_FAMILY, FONT_SIZE_TITLE,
                      FONT_SIZE_HEADER, FONT_SIZE_BODY, FONT_SIZE_SMALL)
 from utils.formatting import format_size, format_count
 
@@ -142,7 +142,7 @@ class DestinationCard(ctk.CTkFrame):
 
         self._bar = ctk.CTkProgressBar(
             self, mode='indeterminate', height=4,
-            fg_color='#2a2a4a', progress_color=COLOR_ACCENT
+            fg_color=COLOR_BORDER, progress_color=COLOR_ACCENT
         )
         self._bar.pack(fill='x', padx=18, pady=(0, 4))
         self._bar.start()
@@ -186,7 +186,7 @@ class JobHistoryCard(ctk.CTkFrame):
     }
 
     def __init__(self, parent, session, **kw):
-        super().__init__(parent, fg_color='#0a1a30', corner_radius=10, **kw)
+        super().__init__(parent, fg_color=COLOR_CARD, corner_radius=10, **kw)
         self._build(dict(session))
 
     def _build(self, s: dict):
@@ -252,7 +252,7 @@ class JobHistoryCard(ctk.CTkFrame):
 
         bar = ctk.CTkProgressBar(
             bar_row, height=8, corner_radius=4,
-            fg_color='#2a2a4a', progress_color=bar_color
+            fg_color=COLOR_BORDER, progress_color=bar_color
         )
         bar.set(prog)
         bar.pack(side='left', fill='x', expand=True, padx=(0, 10))
@@ -558,4 +558,5 @@ class DashboardView:
         self.app.app_state['scan_results'] = None
         self.app.app_state['plan'] = None
         self.app.app_state['dup_result'] = None
+        self.app.app_state['dup_device_info'] = {}
         self.main_window.navigate('sources')

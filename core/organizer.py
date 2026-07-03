@@ -1,7 +1,7 @@
 import hashlib
 import shutil
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Callable
@@ -325,13 +325,27 @@ def execute_plan(
             if callback:
                 callback(idx, plan.total, op.src, op)
 
+        max_pending = max(workers * 2, workers)
+        op_iter = iter(operations)
+        pending = set()
         with ThreadPoolExecutor(max_workers=workers) as executor:
-            futures = [executor.submit(run_op, op) for op in operations]
-            for future in as_completed(futures):
-                try:
-                    future.result()
-                except Exception:
-                    pass
+            while True:
+                if stop_event and stop_event.is_set():
+                    break
+                while len(pending) < max_pending:
+                    try:
+                        op = next(op_iter)
+                    except StopIteration:
+                        break
+                    pending.add(executor.submit(run_op, op))
+                if not pending:
+                    break
+                done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                for future in done:
+                    try:
+                        future.result()
+                    except Exception:
+                        pass
 
     return result
 

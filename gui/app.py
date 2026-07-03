@@ -21,7 +21,7 @@ from gui.theme import (
 
 # Theme settings
 ctk.set_appearance_mode("dark")
-ctk.set_default_color_theme("green")
+ctk.set_default_color_theme("dark-blue")
 
 COLOR_BG = APP_BG
 COLOR_SIDEBAR = SIDEBAR_BG
@@ -53,6 +53,7 @@ class PhotoVaultApp(ctk.CTk):
             'scan_results': None,   # count_files result
             'plan': None,           # OrganizationPlan
             'dup_result': None,     # DuplicateResult
+            'dup_device_info': {},  # path -> detected device fields
             'session': {},
             'phash_threshold': 10,
             'include_no_date': True,

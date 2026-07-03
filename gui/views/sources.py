@@ -329,7 +329,7 @@ class SourcesView:
         self.status_label.configure(
             text=f'Scan concluido: {format_count(results.get("total", 0))} arquivos encontrados.'
         )
-        self.main_window.navigate("rules")
+        self.main_window.navigate("inventory")
 
     def refresh(self):
         self._refresh_sources()

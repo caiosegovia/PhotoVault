@@ -58,6 +58,9 @@ class ProgressView:
         self._start_time = None
         self._processed = 0
         self._total = 0
+        self._last_ui_update = 0.0
+        self._log_lines = 0
+        self._max_log_lines = 500
         self._pause_event = threading.Event()
         self._pause_event.set()  # set = não pausado
         self._stop_event = threading.Event()
@@ -89,7 +92,7 @@ class ProgressView:
         self.main_progress = ctk.CTkProgressBar(
             prog_card, variable=self.progress_var,
             height=20, corner_radius=8,
-            fg_color='#2a2a4a', progress_color=COLOR_ACCENT
+            fg_color=COLOR_CARD, progress_color=COLOR_ACCENT
         )
         self.main_progress.pack(fill='x', padx=20, pady=4)
 
@@ -171,7 +174,7 @@ class ProgressView:
             font=(FONT_FAMILY, FONT_SIZE_SMALL),
             fg_color=COLOR_BG, selected_color=COLOR_ACCENT,
             selected_hover_color=COLOR_ACCENT2,
-            unselected_color=COLOR_BG, unselected_hover_color='#2a2a4a',
+            unselected_color=COLOR_BG, unselected_hover_color=COLOR_CARD,
             width=180, height=28
         )
         self.workers_btn.set('4')
@@ -201,7 +204,7 @@ class ProgressView:
         self.log_text = ctk.CTkTextbox(
             log_card, height=250,
             font=(FONT_FAMILY, FONT_SIZE_SMALL),
-            fg_color='#111122', text_color=COLOR_TEXT,
+            fg_color=COLOR_BG, text_color=COLOR_TEXT,
             corner_radius=8
         )
         self.log_text.pack(fill='both', expand=True, padx=10, pady=10)
@@ -210,6 +213,11 @@ class ProgressView:
     def _log(self, msg: str, color: str = None):
         self.log_text.configure(state='normal')
         self.log_text.insert('end', msg + '\n')
+        self._log_lines += msg.count('\n') + 1
+        if self._log_lines > self._max_log_lines:
+            excess = self._log_lines - self._max_log_lines
+            self.log_text.delete('1.0', f'{excess + 1}.0')
+            self._log_lines = self._max_log_lines
         self.log_text.see('end')
         self.log_text.configure(state='disabled')
 
@@ -231,6 +239,8 @@ class ProgressView:
         self._processed = 0
         self._total = len(plan.operations)
         self._start_time = time.time()
+        self._last_ui_update = 0.0
+        self._log_lines = 0
         self._copied_bytes = 0
 
         self.start_btn.configure(state='disabled')
@@ -238,7 +248,7 @@ class ProgressView:
         self.cancel_btn.configure(state='normal')
         try:
             self.workers_btn.configure(state='disabled')
-            self._settings_frame.configure(fg_color='#1a1a2e')
+            self._settings_frame.configure(fg_color=COLOR_BG)
         except Exception:
             pass
         self.progress_var.set(0)
@@ -278,6 +288,11 @@ class ProgressView:
                     speed = processed / elapsed if elapsed > 0 else 0
                     remaining = total - processed
                     progress = processed / total if total > 0 else 0
+                    now = time.monotonic()
+                    is_last = processed >= total
+                    if not is_last and now - self._last_ui_update < 0.10:
+                        return
+                    self._last_ui_update = now
 
                     self.parent.after(0, lambda p=progress, c=processed, sp=speed,
                                                r=remaining, f=copied:

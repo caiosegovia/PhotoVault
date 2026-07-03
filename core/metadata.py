@@ -3,6 +3,7 @@ from pathlib import Path
 from datetime import datetime
 from typing import Optional
 
+from core.device_detector import classify_device
 from utils.constants import PHOTO_EXTENSIONS, VIDEO_EXTENSIONS
 
 
@@ -38,19 +39,64 @@ def _extract_photo_date(path: Path) -> Optional[datetime]:
     try:
         from PIL import Image
         from PIL.ExifTags import TAGS
-        img = Image.open(path)
-        exif_data = img._getexif()
-        if exif_data:
-            for tag_id, value in exif_data.items():
-                tag = TAGS.get(tag_id, '')
-                if tag in ('DateTimeOriginal', 'DateTimeDigitized', 'DateTime'):
-                    dt = _parse_exif_date(value)
-                    if dt:
-                        return dt
+        with Image.open(path) as img:
+            exif_data = img._getexif()
+            if exif_data:
+                for tag_id, value in exif_data.items():
+                    tag = TAGS.get(tag_id, '')
+                    if tag in ('DateTimeOriginal', 'DateTimeDigitized', 'DateTime'):
+                        dt = _parse_exif_date(value)
+                        if dt:
+                            return dt
     except Exception:
         pass
 
     return None
+
+
+def _extract_photo_device(path: Path) -> dict:
+    """Extract camera/device fields from EXIF with Pillow fallback."""
+    fields = {'make': None, 'model': None, 'software': None, 'lens_model': None}
+
+    try:
+        import exifread
+        with open(path, 'rb') as f:
+            tags = exifread.process_file(f, details=False)
+        mapping = {
+            'Image Make': 'make',
+            'Image Model': 'model',
+            'Image Software': 'software',
+            'EXIF LensModel': 'lens_model',
+        }
+        for tag_name, field in mapping.items():
+            if tag_name in tags:
+                fields[field] = str(tags[tag_name])
+    except Exception:
+        pass
+
+    if any(fields.values()):
+        return fields
+
+    try:
+        from PIL import Image
+        from PIL.ExifTags import TAGS
+        with Image.open(path) as img:
+            exif_data = img._getexif()
+            if exif_data:
+                for tag_id, value in exif_data.items():
+                    tag = TAGS.get(tag_id, '')
+                    if tag == 'Make':
+                        fields['make'] = value
+                    elif tag == 'Model':
+                        fields['model'] = value
+                    elif tag == 'Software':
+                        fields['software'] = value
+                    elif tag == 'LensModel':
+                        fields['lens_model'] = value
+    except Exception:
+        pass
+
+    return fields
 
 
 def _extract_video_date(path: Path) -> Optional[datetime]:
@@ -104,6 +150,30 @@ def _extract_video_date(path: Path) -> Optional[datetime]:
     return None
 
 
+def _extract_video_metadata(path: Path) -> dict:
+    fields = {'make': None, 'model': None, 'software': None, 'lens_model': None}
+    try:
+        result = subprocess.run(
+            ['ffprobe', '-v', 'quiet', '-print_format', 'json',
+             '-show_format', '-show_streams', str(path)],
+            capture_output=True, text=True, timeout=10
+        )
+        if result.returncode == 0:
+            import json
+            data = json.loads(result.stdout)
+            tags = data.get('format', {}).get('tags', {}) or {}
+            stream_tags = {}
+            for stream in data.get('streams', []) or []:
+                stream_tags.update(stream.get('tags', {}) or {})
+            tags = {**stream_tags, **tags}
+            fields['make'] = tags.get('make') or tags.get('com.apple.quicktime.make')
+            fields['model'] = tags.get('model') or tags.get('com.apple.quicktime.model')
+            fields['software'] = tags.get('encoder') or tags.get('software') or tags.get('com.apple.quicktime.software')
+    except Exception:
+        pass
+    return fields
+
+
 def get_media_date(path: Path) -> Optional[datetime]:
     """Get media date with full fallback chain ending at mtime."""
     ext = path.suffix.lower()
@@ -144,6 +214,13 @@ def get_media_info(path: Path) -> dict:
         'type': media_type,
         'has_exif': False,
         'extension': ext,
+        'camera_make': None,
+        'camera_model': None,
+        'lens_model': None,
+        'software': None,
+        'device_type': 'unknown',
+        'device_name': 'Desconhecido',
+        'origin_hint': 'metadata',
     }
 
     if media_type == 'photo':
@@ -154,10 +231,21 @@ def get_media_info(path: Path) -> dict:
             info['date'] = datetime.fromtimestamp(stat.st_mtime)
         try:
             from PIL import Image
-            img = Image.open(path)
-            info['width'], info['height'] = img.size
+            with Image.open(path) as img:
+                info['width'], info['height'] = img.size
         except Exception:
             pass
+        device_fields = _extract_photo_device(path)
+        device = classify_device(path=path, **device_fields)
+        info.update({
+            'camera_make': device.make,
+            'camera_model': device.model,
+            'lens_model': device.lens_model,
+            'software': device.software,
+            'device_type': device.device_type,
+            'device_name': device.normalized_name,
+            'origin_hint': device.origin_hint,
+        })
 
     elif media_type == 'video':
         info['date'] = _extract_video_date(path)
@@ -184,7 +272,24 @@ def get_media_info(path: Path) -> dict:
                         pass
         except Exception:
             pass
+        device_fields = _extract_video_metadata(path)
+        device = classify_device(path=path, **device_fields)
+        info.update({
+            'camera_make': device.make,
+            'camera_model': device.model,
+            'lens_model': device.lens_model,
+            'software': device.software,
+            'device_type': device.device_type,
+            'device_name': device.normalized_name,
+            'origin_hint': device.origin_hint,
+        })
     else:
         info['date'] = datetime.fromtimestamp(stat.st_mtime)
+        device = classify_device(path=path)
+        info.update({
+            'device_type': device.device_type,
+            'device_name': device.normalized_name,
+            'origin_hint': device.origin_hint,
+        })
 
     return info

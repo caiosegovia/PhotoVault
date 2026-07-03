@@ -43,7 +43,8 @@ def compute_phash(path: Path) -> Optional[str]:
     try:
         import imagehash
         from PIL import Image
-        img = Image.open(path).convert('RGB')
+        with Image.open(path) as source:
+            img = source.convert('RGB')
         return str(imagehash.phash(img))
     except Exception:
         return None

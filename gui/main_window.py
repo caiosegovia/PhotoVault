@@ -20,6 +20,7 @@ from utils.formatting import format_count
 NAV_ITEMS = [
     ("dashboard", "Dashboard"),
     ("sources", "Fontes"),
+    ("inventory", "Inventario"),
     ("rules", "Regras"),
     ("preview", "Preview"),
     ("duplicates", "Duplicatas"),
@@ -144,6 +145,7 @@ class MainWindow:
     def _load_views(self):
         from gui.views.dashboard import DashboardView
         from gui.views.sources import SourcesView
+        from gui.views.inventory import InventoryView
         from gui.views.rules import RulesView
         from gui.views.preview import PreviewView
         from gui.views.duplicates import DuplicatesView
@@ -154,6 +156,7 @@ class MainWindow:
         view_classes = {
             "dashboard": DashboardView,
             "sources": SourcesView,
+            "inventory": InventoryView,
             "rules": RulesView,
             "preview": PreviewView,
             "duplicates": DuplicatesView,

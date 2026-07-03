@@ -4,10 +4,10 @@ matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
-from gui.theme import ACCENT, ERROR, SURFACE, TEXT, TEXT_MUTED, WARNING
+from gui.theme import ACCENT, ACCENT_HOVER, BORDER, ERROR, SURFACE, TEXT, TEXT_MUTED, WARNING
 
 CARD_BG = SURFACE
-ACCENT_COLORS = [ACCENT, '#38bdf8', WARNING, ERROR, '#a78bfa', '#94a3b8']
+ACCENT_COLORS = [ACCENT, '#9ca3af', WARNING, ERROR, ACCENT_HOVER, '#52525b']
 
 
 def _apply_dark_style(fig, ax):
@@ -15,7 +15,7 @@ def _apply_dark_style(fig, ax):
     ax.set_facecolor(CARD_BG)
     ax.tick_params(colors=TEXT_MUTED, labelsize=9)
     for spine in ax.spines.values():
-        spine.set_edgecolor('#263241')
+        spine.set_edgecolor(BORDER)
 
 
 class StorageDonutChart(ctk.CTkFrame):

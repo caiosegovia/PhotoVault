@@ -4,7 +4,7 @@ import customtkinter as ctk
 from pathlib import Path
 from gui.app import (COLOR_CARD, COLOR_TEXT, COLOR_TEXT_DIM, COLOR_ACCENT,
                      COLOR_ACCENT2, COLOR_BG, COLOR_SUCCESS, COLOR_WARNING,
-                     COLOR_ERROR, FONT_FAMILY, FONT_SIZE_TITLE, FONT_SIZE_HEADER,
+                     COLOR_ERROR, COLOR_BORDER, FONT_FAMILY, FONT_SIZE_TITLE, FONT_SIZE_HEADER,
                      FONT_SIZE_BODY, FONT_SIZE_SMALL)
 from utils.formatting import format_size, format_count, format_date_short
 
@@ -13,10 +13,12 @@ _VISUAL_CAP = 2000
 
 
 class DuplicateGroupCard(ctk.CTkFrame):
-    def __init__(self, parent, group_paths: list[Path], suggested: Path, on_decision, **kw):
+    def __init__(self, parent, group_paths: list[Path], suggested: Path, on_decision,
+                 device_info: dict[str, dict] = None, **kw):
         super().__init__(parent, fg_color=COLOR_CARD, corner_radius=10, **kw)
         self.group_paths = group_paths
         self.suggested = suggested
+        self.device_info = device_info or {}
         self.decision_var = ctk.StringVar(value=str(suggested))
         self._on_decision = on_decision
         self._build()
@@ -50,6 +52,14 @@ class DuplicateGroupCard(ctk.CTkFrame):
             ctk.CTkLabel(
                 col, text=size_txt,
                 font=(FONT_FAMILY, FONT_SIZE_SMALL), text_color=COLOR_TEXT_DIM
+            ).pack(anchor='w')
+            origin = self.device_info.get(str(path), {})
+            origin_txt = origin.get('device_name') or 'Origem desconhecida'
+            origin_type = origin.get('device_type') or 'unknown'
+            ctk.CTkLabel(
+                col, text=f'{origin_txt} · {origin_type}',
+                font=(FONT_FAMILY, FONT_SIZE_SMALL), text_color=COLOR_TEXT_DIM,
+                wraplength=120, anchor='w'
             ).pack(anchor='w')
 
             # Radio button
@@ -130,7 +140,7 @@ class DuplicatesView:
         # Loading bar (hidden initially)
         self.loading_bar = ctk.CTkProgressBar(
             self.parent, mode='determinate', height=6,
-            fg_color='#2a2a4a', progress_color=COLOR_ACCENT
+            fg_color=COLOR_BORDER, progress_color=COLOR_ACCENT
         )
 
         # Tab view
@@ -176,12 +186,13 @@ class DuplicatesView:
         if self._scanning:
             return
         sources = self.app.app_state.get('sources', [])
-        if not sources:
-            self.summary_label.configure(text='Adicione fontes antes de detectar duplicatas.')
+        destination = self.app.app_state.get('destination')
+        if not sources and not destination:
+            self.summary_label.configure(text='Adicione fontes ou selecione um destino antes de detectar duplicatas.')
             return
 
         self._scanning = True
-        self.summary_label.configure(text='Detectando duplicatas...')
+        self.summary_label.configure(text='Detectando duplicatas em origens e destino...')
         self.loading_bar.set(0)
         self.loading_bar.pack(fill='x', padx=20, pady=(0, 4))
         self._clear_results()  # also increments _render_gen
@@ -198,15 +209,35 @@ class DuplicatesView:
 
                 # --- Fase 0: varredura de fontes (com feedback por contagem) ---
                 all_files: list[Path] = []
+                scan_sources = []
+                seen_roots = set()
                 for src in sources:
                     if src.get('type') == 'cloud':
                         continue
-                    for f in scan_directory(Path(src['path'])):
+                    root = Path(src['path'])
+                    key = str(root.resolve()).lower() if root.exists() else str(root).lower()
+                    if key in seen_roots:
+                        continue
+                    seen_roots.add(key)
+                    scan_sources.append({'path': root, 'role': 'origin'})
+
+                destination = self.app.app_state.get('destination')
+                if destination:
+                    dest = Path(destination)
+                    key = str(dest.resolve()).lower() if dest.exists() else str(dest).lower()
+                    if dest.exists() and key not in seen_roots:
+                        seen_roots.add(key)
+                        scan_sources.append({'path': dest, 'role': 'destination'})
+
+                for src in scan_sources:
+                    root = src['path']
+                    label = 'destino' if src.get('role') == 'destination' else 'fontes'
+                    for f in scan_directory(root):
                         all_files.append(f)
                         n = len(all_files)
                         if n % 200 == 0:
-                            self.parent.after(0, lambda c=n: self.summary_label.configure(
-                                text=f'Escaneando fontes: {c} arquivos encontrados...'
+                            self.parent.after(0, lambda c=n, lbl=label: self.summary_label.configure(
+                                text=f'Escaneando {lbl}: {c} arquivos encontrados...'
                             ))
 
                 threshold = self.app.app_state.get('phash_threshold', 10)
@@ -286,12 +317,30 @@ class DuplicatesView:
 
                 # Pre-compute suggestions in worker (avoids EXIF reads on main thread)
                 suggestions: dict[str, Path] = {}
+                device_info: dict[str, dict] = {}
+                from core.metadata import get_media_info
                 for k, paths in list(dup_result.exact.items()) + list(dup_result.visual.items()):
                     suggestions[k] = suggest_keeper(paths)
+                    for path in paths:
+                        key = str(path)
+                        if key in device_info:
+                            continue
+                        try:
+                            info = get_media_info(path)
+                            device_info[key] = {
+                                'device_name': info.get('device_name') or 'Desconhecido',
+                                'device_type': info.get('device_type') or 'unknown',
+                            }
+                        except Exception:
+                            device_info[key] = {
+                                'device_name': 'Desconhecido',
+                                'device_type': 'unknown',
+                            }
 
                 self.app.app_state['dup_result'] = dup_result
                 self.app.app_state['dup_suggestions'] = suggestions
-                self.parent.after(0, lambda: self._populate_results(dup_result, suggestions))
+                self.app.app_state['dup_device_info'] = device_info
+                self.parent.after(0, lambda: self._populate_results(dup_result, suggestions, device_info))
             except Exception as e:
                 self.parent.after(0, lambda msg=str(e): self._on_detection_error(msg))
 
@@ -311,7 +360,7 @@ class DuplicatesView:
             text=f'Erro na detecção: {msg}', text_color=COLOR_ERROR
         )
 
-    def _populate_results(self, dup_result, suggestions: dict = None):
+    def _populate_results(self, dup_result, suggestions: dict = None, device_info: dict = None):
         self._scanning = False
         self.loading_bar.set(1.0)
         self.loading_bar.pack_forget()
@@ -319,6 +368,8 @@ class DuplicatesView:
 
         if suggestions is None:
             suggestions = {}
+        if device_info is None:
+            device_info = {}
 
         exact_count = len(dup_result.exact)
         visual_count = len(dup_result.visual)
@@ -352,10 +403,11 @@ class DuplicatesView:
             ).pack(pady=30)
 
         gen = self._render_gen
-        self._render_batch(exact_items, self.exact_scroll, 0, suggestions, gen=gen)
-        self._render_batch(visual_items, self.visual_scroll, 0, suggestions, gen=gen)
+        self._render_batch(exact_items, self.exact_scroll, 0, suggestions, device_info, gen=gen)
+        self._render_batch(visual_items, self.visual_scroll, 0, suggestions, device_info, gen=gen)
 
-    def _render_batch(self, items, container, start, suggestions: dict, batch=4, gen=0):
+    def _render_batch(self, items, container, start, suggestions: dict, device_info: dict,
+                      batch=4, gen=0):
         """Render `batch` cards then yield to the event loop — keeps UI responsive."""
         if gen != self._render_gen:
             return  # cancelled — navigated away or new detection started
@@ -365,12 +417,13 @@ class DuplicatesView:
             suggested = suggestions.get(hash_key, paths[0])
             card = DuplicateGroupCard(
                 container, paths, suggested,
-                on_decision=lambda d, k=hash_key: self._record_decision(k, d)
+                on_decision=lambda d, k=hash_key: self._record_decision(k, d),
+                device_info=device_info,
             )
             card.pack(fill='x', pady=6, padx=4)
         if end < len(items):
             self.parent.after(50, lambda s=end: self._render_batch(
-                items, container, s, suggestions, batch, gen
+                items, container, s, suggestions, device_info, batch, gen
             ))
 
     def _record_decision(self, group_key: str, decision: str):
@@ -408,4 +461,5 @@ class DuplicatesView:
         if dup:
             self._clear_results()
             suggestions = self.app.app_state.get('dup_suggestions', {})
-            self._populate_results(dup, suggestions)
+            device_info = self.app.app_state.get('dup_device_info', {})
+            self._populate_results(dup, suggestions, device_info)
