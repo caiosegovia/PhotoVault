@@ -232,6 +232,7 @@ class ProgressView:
 
         workers = int(self.workers_btn.get())
         verify = self.verify_var.get()
+        is_ingest = self.app.app_state.get('plan_kind') == 'ingest'
 
         self._running = True
         self._pause_event.set()
@@ -262,6 +263,10 @@ class ProgressView:
 
         def worker():
             try:
+                if is_ingest:
+                    self._run_ingest_worker()
+                    return
+
                 from core.organizer import execute_plan
 
                 def cb(current, total, src, op):
@@ -314,6 +319,47 @@ class ProgressView:
         self._thread = threading.Thread(target=worker, daemon=True)
         self._thread.start()
 
+    def _run_ingest_worker(self):
+        from core.ingestion import execute_ingest_plan
+
+        plan_id = self.app.app_state.get('ingest_plan_id')
+        if not plan_id:
+            raise RuntimeError('Plano de ingestao nao encontrado.')
+
+        def cb(current, total, src):
+            if self._stop_event.is_set():
+                return
+
+            processed = current + 1
+            self._processed = processed
+            try:
+                size = src.stat().st_size
+            except OSError:
+                size = 0
+            with self._bytes_lock:
+                self._copied_bytes += size
+                copied = self._copied_bytes
+
+            elapsed = time.time() - self._start_time
+            speed = processed / elapsed if elapsed > 0 else 0
+            remaining = total - processed
+            progress = processed / total if total > 0 else 0
+            now = time.monotonic()
+            is_last = processed >= total
+            if not is_last and now - self._last_ui_update < 0.10:
+                return
+            self._last_ui_update = now
+
+            self.parent.after(
+                0,
+                lambda p=progress, c=processed, t=total, s=src, sp=speed, r=remaining, f=copied:
+                    self._update_ui(p, c, t, s, sp, r, f)
+            )
+
+        stats = execute_ingest_plan(plan_id, callback=cb)
+        self.app.app_state['exec_result'] = stats
+        self.parent.after(0, self._on_done)
+
     def _update_ui(self, progress, current, total, src, speed, remaining, copied=0):
         self.progress_var.set(progress)
         self.progress_label.configure(text=f'{format_count(current)} / {format_count(total)}')
@@ -343,18 +389,26 @@ class ProgressView:
         from core.database import save_session
         result = self.app.app_state.get('exec_result')
         dup = self.app.app_state.get('dup_result')
+        if isinstance(result, dict):
+            processed = result.get('processed', 0)
+            errors = result.get('errors', 0)
+            total = result.get('total', self._total)
+        else:
+            processed = result.processed if result else self._processed
+            errors = result.errors if result else 0
+            total = result.total if result else self._total
         try:
             save_session({
                 'started_at': datetime.fromtimestamp(self._start_time).isoformat() if self._start_time else None,
                 'completed_at': datetime.now().isoformat(),
                 'sources': [s['path'] for s in self.app.app_state.get('sources', [])],
                 'destination': str(self.app.app_state.get('destination', '')),
-                'files_processed': result.processed if result else self._processed,
-                'files_moved': result.processed if result else self._processed,
+                'files_processed': processed,
+                'files_moved': processed,
                 'duplicates_found': len(dup.exact) + len(dup.visual) if dup else 0,
                 'space_freed': dup.space_wasted if dup else 0,
-                'errors': result.errors if result else 0,
-                'total_files': result.total if result else self._total,
+                'errors': errors,
+                'total_files': total,
                 'status': status,
             })
         except Exception:
@@ -363,6 +417,24 @@ class ProgressView:
     def _on_done(self):
         self._running = False
         result = self.app.app_state.get('exec_result')
+        if isinstance(result, dict):
+            elapsed = time.time() - self._start_time
+            self._log(f'\n=== Concluido em {elapsed:.1f}s ===')
+            self._log(f'Processados: {result.get("processed", 0)}')
+            self._log(f'Erros: {result.get("errors", 0)}')
+            self._log(f'Ignorados: {result.get("skipped", 0)}')
+            self.start_btn.configure(state='normal', text='Concluido')
+            self.pause_btn.configure(state='disabled')
+            self.cancel_btn.configure(state='disabled')
+            try:
+                self.workers_btn.configure(state='normal')
+                self._settings_frame.configure(fg_color=COLOR_CARD)
+            except Exception:
+                pass
+            self.progress_var.set(1.0)
+            self._save_session('completed')
+            self.main_window.navigate('report')
+            return
         if result:
             elapsed = time.time() - self._start_time
             self._log(f'\n=== Concluído em {elapsed:.1f}s ===')

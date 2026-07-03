@@ -52,6 +52,8 @@ class PhotoVaultApp(ctk.CTk):
             'mode': 'copy',
             'scan_results': None,   # count_files result
             'plan': None,           # OrganizationPlan
+            'plan_kind': None,      # 'legacy' | 'ingest'
+            'ingest_plan_id': None,
             'dup_result': None,     # DuplicateResult
             'dup_device_info': {},  # path -> detected device fields
             'session': {},

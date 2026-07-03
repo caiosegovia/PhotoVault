@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PhotoVault</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <aside class="rail">
+        <div class="brand">
+          <div class="brand-mark">PV</div>
+          <div>
+            <strong>PhotoVault</strong>
+            <span>Galeria permanente</span>
+          </div>
+        </div>
+        <nav>
+          <button class="active">Galeria</button>
+          <button>Importações</button>
+          <button>Explorar</button>
+          <button>Auditoria</button>
+        </nav>
+        <div class="vault-chip">
+          <span>Vault ativo</span>
+          <strong>D:\Galeria</strong>
+        </div>
+      </aside>
+
+      <section class="workspace">
+        <header class="hero">
+          <div>
+            <p class="eyebrow">Ciclo aberto de importações</p>
+            <h1>Construa uma galeria confiável, uma importação por vez.</h1>
+            <p class="hero-copy">
+              Escolha uma pasta, valide duplicidades, veja impacto em disco e persista somente os arquivos novos.
+            </p>
+            <div class="hero-actions">
+              <button class="primary">Nova importação</button>
+              <button class="secondary">Importar selecionada</button>
+            </div>
+          </div>
+          <div class="disk-panel">
+            <div class="disk-top">
+              <span>Disco da galeria</span>
+              <strong>624 GB livres</strong>
+            </div>
+            <div class="capacity">
+              <span style="width: 58%"></span>
+              <i style="left: 58%; width: 7%"></i>
+            </div>
+            <div class="legend">
+              <span><b class="used"></b> usado</span>
+              <span><b class="pending"></b> importação</span>
+            </div>
+            <div class="impact">
+              <strong>+42,8 GB</strong>
+              <span>impacto da importação selecionada</span>
+            </div>
+          </div>
+        </header>
+
+        <section class="metrics">
+          <article><span>Importações</span><strong>18</strong><em>3 em aberto</em></article>
+          <article><span>Arquivos na galeria</span><strong>42.380</strong><em>318 GB persistidos</em></article>
+          <article><span>Duplicatas evitadas</span><strong>7.912</strong><em>86 GB poupados</em></article>
+          <article><span>Erros pendentes</span><strong>24</strong><em>revisão necessária</em></article>
+        </section>
+
+        <section class="main-grid">
+          <div class="console">
+            <div class="section-head">
+              <div>
+                <p>Importação selecionada</p>
+                <h2>HD família 2012-2018</h2>
+              </div>
+              <span class="status ready">Pronta</span>
+            </div>
+
+            <div class="decision-strip">
+              <div><span>Encontrados</span><strong>18.420</strong></div>
+              <div><span>Novos</span><strong>11.302</strong></div>
+              <div><span>Duplicados</span><strong>6.990</strong></div>
+              <div><span>Erros</span><strong>128</strong></div>
+            </div>
+
+            <div class="filters">
+              <button class="active">Todos</button>
+              <button>Novos</button>
+              <button>Duplicados</button>
+              <button>Erros</button>
+              <button>Sem data</button>
+              <button>Vídeos</button>
+            </div>
+
+            <div class="file-table">
+              <div class="row header">
+                <span>Status</span><span>Origem</span><span>Destino</span><span>Tamanho</span>
+              </div>
+              <div class="row good">
+                <span>Novo</span><span>IMG_4021.JPG</span><span>2017/08/IMG_4021_91ad.jpg</span><span>4.8 MB</span>
+              </div>
+              <div class="row muted">
+                <span>Duplicata</span><span>DCIM/100APPLE/IMG_4021.JPG</span><span>já existe na galeria</span><span>4.8 MB</span>
+              </div>
+              <div class="row good">
+                <span>Novo</span><span>VID_20180311.MP4</span><span>2018/03/VID_20180311_7cc1.mp4</span><span>248 MB</span>
+              </div>
+              <div class="row warn">
+                <span>Erro</span><span>corrompida_04.mov</span><span>revisão manual</span><span>0 B</span>
+              </div>
+            </div>
+          </div>
+
+          <aside class="timeline">
+            <div class="section-head compact">
+              <div>
+                <p>Timeline</p>
+                <h2>Importações</h2>
+              </div>
+            </div>
+            <article class="import-card active">
+              <span class="status ready">Pronta</span>
+              <strong>HD família 2012-2018</strong>
+              <p>11.302 novos · 6.990 duplicados · 42,8 GB</p>
+            </article>
+            <article class="import-card">
+              <span class="status done">Concluída</span>
+              <strong>iPhone 2024</strong>
+              <p>982 importados · 258 duplicados · 6,1 GB</p>
+            </article>
+            <article class="import-card">
+              <span class="status running">Analisando</span>
+              <strong>Google Photos Takeout</strong>
+              <p>4.120 encontrados · em progresso</p>
+            </article>
+
+            <div class="bars">
+              <h3>Status</h3>
+              <label>Novos <span>61%</span></label>
+              <div><span style="width: 61%"></span></div>
+              <label>Duplicados <span>38%</span></label>
+              <div><span style="width: 38%"></span></div>
+              <label>Erros <span>1%</span></label>
+              <div><span style="width: 8%"></span></div>
+            </div>
+          </aside>
+        </section>
+      </section>
+    </main>
+  </body>
+</html>

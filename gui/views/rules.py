@@ -300,6 +300,8 @@ class RulesView:
         self.app.app_state["include_no_date"] = self.include_no_date_var.get()
         self.app.app_state["skip_existing"] = self.skip_existing_var.get()
         self.app.app_state["plan"] = None
+        self.app.app_state["plan_kind"] = None
+        self.app.app_state["ingest_plan_id"] = None
 
         self.main_window.navigate("preview")
 

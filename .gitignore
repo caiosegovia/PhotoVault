@@ -19,6 +19,15 @@ dist/
 dist_perf/
 *.spec.bak
 
+# Frontend / Tauri build artifacts
+node_modules/
+frontend/dist/
+frontend/src-tauri/target/
+frontend/src-tauri/gen/
+frontend/src-tauri/target/
+*.msi
+*.exe
+
 # Database & user data
 *.db
 *.db-shm

@@ -18,14 +18,9 @@ from utils.formatting import format_count
 
 
 NAV_ITEMS = [
-    ("dashboard", "Dashboard"),
-    ("sources", "Fontes"),
-    ("inventory", "Inventario"),
-    ("rules", "Regras"),
-    ("preview", "Preview"),
-    ("duplicates", "Duplicatas"),
-    ("progress", "Executar"),
-    ("report", "Relatorio"),
+    ("organize", "Galeria"),
+    ("vault", "Explorar"),
+    ("report", "Auditoria"),
     ("settings", "Ajustes"),
 ]
 
@@ -42,7 +37,7 @@ class MainWindow:
 
         self._build_layout()
         self._load_views()
-        self.navigate("dashboard")
+        self.navigate("organize")
 
     def _build_layout(self):
         self.sidebar = ctk.CTkFrame(self.app, width=188, corner_radius=0, fg_color=SIDEBAR_BG)
@@ -60,7 +55,7 @@ class MainWindow:
         ).pack(anchor="w")
         ctk.CTkLabel(
             brand,
-            text="Curadoria local de midia",
+            text="Vault local confiavel",
             font=(FONT_FAMILY, FONT_SIZE_SMALL),
             text_color=TEXT_MUTED,
             anchor="w",
@@ -144,8 +139,11 @@ class MainWindow:
 
     def _load_views(self):
         from gui.views.dashboard import DashboardView
+        from gui.views.organize import OrganizeView
+        from gui.views.vault import VaultView
         from gui.views.sources import SourcesView
         from gui.views.inventory import InventoryView
+        from gui.views.compare import CompareView
         from gui.views.rules import RulesView
         from gui.views.preview import PreviewView
         from gui.views.duplicates import DuplicatesView
@@ -154,14 +152,18 @@ class MainWindow:
         from gui.views.settings import SettingsView
 
         view_classes = {
+            "organize": OrganizeView,
+            "vault": VaultView,
             "dashboard": DashboardView,
             "sources": SourcesView,
             "inventory": InventoryView,
+            "compare": CompareView,
             "rules": RulesView,
             "preview": PreviewView,
             "duplicates": DuplicatesView,
             "progress": ProgressView,
             "report": ReportView,
+            "history": DashboardView,
             "settings": SettingsView,
         }
 

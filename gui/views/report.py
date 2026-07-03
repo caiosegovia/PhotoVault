@@ -107,14 +107,22 @@ class ReportView:
         dup = self.app.app_state.get('dup_result')
 
         if result:
-            self.card_processed.configure(text=format_count(result.processed))
-            self.card_errors.configure(text=format_count(result.errors))
+            if isinstance(result, dict):
+                processed = result.get('processed', 0)
+                errors = result.get('errors', 0)
+                error_ops = []
+            else:
+                processed = result.processed
+                errors = result.errors
+                error_ops = [op for op in result.operations if op.status == 'error']
+
+            self.card_processed.configure(text=format_count(processed))
+            self.card_errors.configure(text=format_count(errors))
 
             # Populate errors
             for w in self.errors_list.winfo_children():
                 w.destroy()
 
-            error_ops = [op for op in result.operations if op.status == 'error']
             if error_ops:
                 for op in error_ops[:50]:
                     row = ctk.CTkFrame(self.errors_list, fg_color='transparent')
@@ -167,8 +175,12 @@ class ReportView:
             pass
 
     def _build_html(self, result, dup) -> str:
-        processed = result.processed if result else 0
-        errors = result.errors if result else 0
+        if isinstance(result, dict):
+            processed = result.get('processed', 0)
+            errors = result.get('errors', 0)
+        else:
+            processed = result.processed if result else 0
+            errors = result.errors if result else 0
         dup_count = len(dup.exact) + len(dup.visual) if dup else 0
         freed = format_size(dup.space_wasted) if dup else '0 B'
 
