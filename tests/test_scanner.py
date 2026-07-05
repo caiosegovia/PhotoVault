@@ -1,4 +1,4 @@
-from core.scanner import count_files, scan_directory
+from core.scanner import ScanReport, count_files, scan_directory
 
 
 def test_scan_directory_filters_media_extensions(tmp_path):
@@ -22,3 +22,19 @@ def test_count_files_by_type_and_size(tmp_path):
     assert counts['photos'] == 1
     assert counts['videos'] == 1
     assert counts['size_bytes'] == 8
+
+
+def test_scan_report_tracks_walk_errors(monkeypatch, tmp_path):
+    report = ScanReport()
+
+    def fake_walk(_path, onerror=None):
+        if onerror:
+            onerror(PermissionError("denied"))
+        return iter(())
+
+    monkeypatch.setattr("core.scanner.os.walk", fake_walk)
+
+    found = list(scan_directory(tmp_path, report=report))
+
+    assert found == []
+    assert len(report.errors) == 1

@@ -201,6 +201,42 @@ def init_db() -> None:
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 payload TEXT
             );
+            CREATE TABLE IF NOT EXISTS metadata_extractions (
+                id INTEGER PRIMARY KEY,
+                file_id INTEGER,
+                asset_id INTEGER,
+                path TEXT NOT NULL,
+                extractor TEXT NOT NULL,
+                extractor_version TEXT,
+                extracted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                mtime REAL,
+                status TEXT DEFAULT 'ok',
+                raw_json TEXT,
+                UNIQUE(path, extractor)
+            );
+            CREATE TABLE IF NOT EXISTS catalog_tags (
+                id INTEGER PRIMARY KEY,
+                label TEXT UNIQUE NOT NULL,
+                source TEXT DEFAULT 'user',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS asset_tags (
+                asset_id INTEGER NOT NULL,
+                tag_id INTEGER NOT NULL,
+                confidence REAL,
+                source TEXT DEFAULT 'user',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY(asset_id, tag_id, source)
+            );
+            CREATE TABLE IF NOT EXISTS catalog_notes (
+                id INTEGER PRIMARY KEY,
+                asset_id INTEGER,
+                note_type TEXT NOT NULL,
+                source TEXT DEFAULT 'user',
+                confidence REAL,
+                body TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
             CREATE INDEX IF NOT EXISTS idx_hash ON files(hash_sha256);
             CREATE INDEX IF NOT EXISTS idx_phash ON files(hash_phash);
             CREATE INDEX IF NOT EXISTS idx_path ON files(path);
@@ -215,7 +251,18 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_imports_created ON imports(created_at);
             CREATE INDEX IF NOT EXISTS idx_import_files_import ON import_files(import_id);
             CREATE INDEX IF NOT EXISTS idx_import_files_reason ON import_files(reason);
+            CREATE INDEX IF NOT EXISTS idx_metadata_path ON metadata_extractions(path);
+            CREATE INDEX IF NOT EXISTS idx_metadata_file ON metadata_extractions(file_id);
+            CREATE INDEX IF NOT EXISTS idx_metadata_asset ON metadata_extractions(asset_id);
+            CREATE INDEX IF NOT EXISTS idx_catalog_notes_asset ON catalog_notes(asset_id);
         """)
+        try:
+            conn.execute("""
+                CREATE VIRTUAL TABLE IF NOT EXISTS catalog_search
+                USING fts5(path, name, media_type, extension, camera, lens, device, tags)
+            """)
+        except sqlite3.OperationalError:
+            pass
         # Migrate: add new columns if they don't exist yet
         for col_sql in [
             "ALTER TABLE sessions ADD COLUMN errors INTEGER DEFAULT 0",
@@ -254,11 +301,142 @@ def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS idx_imports_created ON imports(created_at)",
             "CREATE INDEX IF NOT EXISTS idx_import_files_import ON import_files(import_id)",
             "CREATE INDEX IF NOT EXISTS idx_import_files_reason ON import_files(reason)",
+            "CREATE INDEX IF NOT EXISTS idx_metadata_path ON metadata_extractions(path)",
+            "CREATE INDEX IF NOT EXISTS idx_metadata_file ON metadata_extractions(file_id)",
+            "CREATE INDEX IF NOT EXISTS idx_metadata_asset ON metadata_extractions(asset_id)",
+            "CREATE INDEX IF NOT EXISTS idx_catalog_notes_asset ON catalog_notes(asset_id)",
         ]:
             try:
                 conn.execute(idx_sql)
             except Exception:
                 pass
+
+
+def save_metadata_extraction_conn(conn: sqlite3.Connection, file_id: Optional[int],
+                                  asset_id: Optional[int], path: str, extractor: str,
+                                  extractor_version: Optional[str], mtime: Optional[float],
+                                  status: str, raw: dict) -> None:
+    """Persist raw metadata/provenance for later insights and agent queries."""
+    conn.execute(
+        """INSERT INTO metadata_extractions(file_id, asset_id, path, extractor,
+                                            extractor_version, mtime, status, raw_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(path, extractor) DO UPDATE SET
+               file_id=COALESCE(excluded.file_id, metadata_extractions.file_id),
+               asset_id=COALESCE(excluded.asset_id, metadata_extractions.asset_id),
+               extractor_version=excluded.extractor_version,
+               mtime=excluded.mtime,
+               status=excluded.status,
+               raw_json=excluded.raw_json,
+               extracted_at=CURRENT_TIMESTAMP""",
+        (file_id, asset_id, path, extractor, extractor_version, mtime, status, json.dumps(raw, default=str)),
+    )
+
+
+def refresh_catalog_search_conn(conn: sqlite3.Connection, path: str, media_type: Optional[str],
+                                extension: Optional[str], camera: str = '',
+                                lens: str = '', device: str = '', tags: str = '') -> None:
+    """Refresh the FTS row used by gallery search and future agent access."""
+    try:
+        conn.execute("DELETE FROM catalog_search WHERE path = ?", (path,))
+        conn.execute(
+            """INSERT INTO catalog_search(path, name, media_type, extension, camera, lens, device, tags)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (path, Path(path).name, media_type or '', extension or '', camera, lens, device, tags),
+        )
+    except sqlite3.OperationalError:
+        pass
+
+
+def save_asset_metadata(asset_id: int, path: str, extractor: str, raw: dict,
+                        extractor_version: str = '1', mtime: Optional[float] = None,
+                        file_id: Optional[int] = None, status: str = 'ok') -> None:
+    """Persist metadata directly for an asset produced by the ingest pipeline."""
+    with _get_conn() as conn:
+        save_metadata_extraction_conn(
+            conn,
+            file_id=file_id,
+            asset_id=asset_id,
+            path=path,
+            extractor=extractor,
+            extractor_version=extractor_version,
+            mtime=mtime,
+            status=status,
+            raw=raw,
+        )
+        refresh_catalog_search_conn(
+            conn,
+            path=path,
+            media_type=raw.get('media_type') or raw.get('type'),
+            extension=raw.get('extension'),
+            camera=' '.join(value for value in [raw.get('camera_make'), raw.get('camera_model')] if value),
+            lens=raw.get('lens_model') or '',
+            device=raw.get('device_name') or raw.get('device_type') or '',
+        )
+
+
+def backfill_catalog_metadata_from_gallery(limit: int = 2000) -> int:
+    """Create lightweight metadata rows for existing destination assets."""
+    from core.device_detector import classify_device
+
+    with _get_conn() as conn:
+        rows = conn.execute(
+            """SELECT
+                   ai.path AS path,
+                   a.id AS asset_id,
+                   a.sha256 AS sha256,
+                   a.size AS size,
+                   a.media_type AS media_type,
+                   a.extension AS extension,
+                   a.date_taken AS date_taken,
+                   a.width AS width,
+                   a.height AS height,
+                   a.duration AS duration
+               FROM asset_instances ai
+               JOIN assets a ON a.id = ai.asset_id
+               WHERE ai.role = 'destination'
+                 AND NOT EXISTS (
+                    SELECT 1 FROM metadata_extractions me
+                    WHERE me.asset_id = a.id
+                 )
+               ORDER BY ai.id DESC
+               LIMIT ?""",
+            (limit,),
+        ).fetchall()
+        for row in rows:
+            device = classify_device(path=Path(row['path']))
+            raw = {
+                'sha256': row['sha256'],
+                'size': row['size'],
+                'media_type': row['media_type'],
+                'extension': row['extension'],
+                'date_taken': row['date_taken'],
+                'width': row['width'],
+                'height': row['height'],
+                'duration': row['duration'],
+                'device_name': device.normalized_name,
+                'device_type': device.device_type,
+                'origin_hint': device.origin_hint,
+            }
+            save_metadata_extraction_conn(
+                conn,
+                file_id=None,
+                asset_id=int(row['asset_id']),
+                path=row['path'],
+                extractor='photovault-backfill',
+                extractor_version='1',
+                mtime=None,
+                status='ok',
+                raw=raw,
+            )
+            refresh_catalog_search_conn(
+                conn,
+                path=row['path'],
+                media_type=row['media_type'],
+                extension=row['extension'],
+                device=device.normalized_name,
+            )
+        return len(rows)
 
 
 def save_file_record(path: str, hash_sha256: Optional[str], hash_phash: Optional[str],
@@ -303,6 +481,46 @@ def save_file_record(path: str, hash_sha256: Optional[str], hash_phash: Optional
         """, (path, hash_sha256, hash_phash, date_str, size, media_type, extension, mtime, source_id,
               camera_make, camera_model, lens_model, software, device_type,
               device_name, origin_hint, width, height, duration, 1 if has_exif else 0))
+        row = conn.execute("SELECT id FROM files WHERE path = ?", (path,)).fetchone()
+        if row:
+            payload = {
+                'date_taken': date_str,
+                'size': size,
+                'media_type': media_type,
+                'extension': extension,
+                'camera_make': camera_make,
+                'camera_model': camera_model,
+                'lens_model': lens_model,
+                'software': software,
+                'device_type': device_type,
+                'device_name': device_name,
+                'origin_hint': origin_hint,
+                'width': width,
+                'height': height,
+                'duration': duration,
+                'has_exif': bool(has_exif),
+                'hash_sha256': hash_sha256,
+            }
+            save_metadata_extraction_conn(
+                conn,
+                file_id=int(row['id']),
+                asset_id=None,
+                path=path,
+                extractor='photovault-core',
+                extractor_version='1',
+                mtime=mtime,
+                status='ok',
+                raw=payload,
+            )
+            refresh_catalog_search_conn(
+                conn,
+                path=path,
+                media_type=media_type,
+                extension=extension,
+                camera=' '.join(value for value in [camera_make, camera_model] if value),
+                lens=lens_model or '',
+                device=device_name or device_type or '',
+            )
 
 
 def get_file_by_hash(hash_sha256: str) -> Optional[sqlite3.Row]:
@@ -664,6 +882,10 @@ def save_asset_instance(asset_id: int, path: str, role: str = 'origin',
             "SELECT id FROM asset_instances WHERE asset_id=? AND path=?",
             (asset_id, path),
         ).fetchone()
+        conn.execute(
+            "UPDATE metadata_extractions SET asset_id = ? WHERE path = ? AND asset_id IS NULL",
+            (asset_id, path),
+        )
         return int(row['id'])
 
 
@@ -674,6 +896,166 @@ def get_asset_instances(asset_id: int) -> list[sqlite3.Row]:
             "SELECT * FROM asset_instances WHERE asset_id=? ORDER BY role, quality_score DESC",
             (asset_id,),
         ).fetchall()
+
+
+def list_gallery_assets(limit: int = 80) -> list[dict]:
+    """Return destination assets that make up the current vault gallery."""
+    with _get_conn() as conn:
+        rows = conn.execute(
+            """SELECT
+                   ai.id AS instance_id,
+                   ai.path AS path,
+                   ai.quality_score AS quality_score,
+                   a.id AS asset_id,
+                   a.sha256 AS sha256,
+                   a.size AS size,
+                   a.media_type AS media_type,
+                   a.extension AS extension,
+                   a.date_taken AS date_taken,
+                   a.width AS width,
+                   a.height AS height,
+                   a.duration AS duration
+               FROM asset_instances ai
+               JOIN assets a ON a.id = ai.asset_id
+               WHERE ai.role = 'destination'
+               ORDER BY
+                   CASE WHEN a.date_taken IS NULL THEN 1 ELSE 0 END,
+                   a.date_taken DESC,
+                   ai.id DESC
+               LIMIT ?""",
+            (limit,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def gallery_totals() -> dict:
+    """Return aggregate counts for destination assets."""
+    with _get_conn() as conn:
+        row = conn.execute(
+            """SELECT
+                   COUNT(*) AS total,
+                   COALESCE(SUM(a.size), 0) AS bytes_total,
+                   SUM(CASE WHEN a.media_type = 'photo' THEN 1 ELSE 0 END) AS photos,
+                   SUM(CASE WHEN a.media_type = 'video' THEN 1 ELSE 0 END) AS videos,
+                   SUM(CASE WHEN a.date_taken IS NULL THEN 1 ELSE 0 END) AS without_date
+               FROM asset_instances ai
+               JOIN assets a ON a.id = ai.asset_id
+               WHERE ai.role = 'destination'"""
+        ).fetchone()
+    return {
+        'total': row['total'] or 0,
+        'bytes_total': row['bytes_total'] or 0,
+        'photos': row['photos'] or 0,
+        'videos': row['videos'] or 0,
+        'without_date': row['without_date'] or 0,
+    }
+
+
+def gallery_breakdowns(limit: int = 8) -> dict:
+    """Return grouped gallery facets for cockpit-style summaries."""
+    with _get_conn() as conn:
+        media = conn.execute(
+            """SELECT COALESCE(a.media_type, 'other') AS label,
+                      COUNT(*) AS count,
+                      COALESCE(SUM(a.size), 0) AS bytes
+               FROM asset_instances ai
+               JOIN assets a ON a.id = ai.asset_id
+               WHERE ai.role = 'destination'
+               GROUP BY COALESCE(a.media_type, 'other')
+               ORDER BY count DESC"""
+        ).fetchall()
+        years = conn.execute(
+            """SELECT COALESCE(strftime('%Y', a.date_taken), 'Sem data') AS label,
+                      COUNT(*) AS count,
+                      COALESCE(SUM(a.size), 0) AS bytes
+               FROM asset_instances ai
+               JOIN assets a ON a.id = ai.asset_id
+               WHERE ai.role = 'destination'
+               GROUP BY label
+               ORDER BY label DESC
+               LIMIT ?""",
+            (limit,),
+        ).fetchall()
+        months = conn.execute(
+            """SELECT COALESCE(strftime('%Y-%m', a.date_taken), 'Sem data') AS label,
+                      COUNT(*) AS count,
+                      COALESCE(SUM(a.size), 0) AS bytes
+               FROM asset_instances ai
+               JOIN assets a ON a.id = ai.asset_id
+               WHERE ai.role = 'destination'
+               GROUP BY label
+               ORDER BY label DESC
+               LIMIT ?""",
+            (limit,),
+        ).fetchall()
+        extensions = conn.execute(
+            """SELECT COALESCE(a.extension, 'sem extensao') AS label,
+                      COUNT(*) AS count,
+                      COALESCE(SUM(a.size), 0) AS bytes
+               FROM asset_instances ai
+               JOIN assets a ON a.id = ai.asset_id
+               WHERE ai.role = 'destination'
+               GROUP BY COALESCE(a.extension, 'sem extensao')
+               ORDER BY count DESC
+               LIMIT ?""",
+            (limit,),
+        ).fetchall()
+        devices = conn.execute(
+            """WITH asset_meta AS (
+                   SELECT asset_id,
+                          COALESCE(
+                            MAX(NULLIF(json_extract(raw_json, '$.device_name'), 'Desconhecido')),
+                            MAX(json_extract(raw_json, '$.device_name')),
+                            'Desconhecido'
+                          ) AS label
+                   FROM metadata_extractions
+                   GROUP BY asset_id
+               )
+               SELECT COALESCE(am.label, 'Desconhecido') AS label,
+                      COUNT(*) AS count,
+                      COALESCE(SUM(a.size), 0) AS bytes
+               FROM asset_instances ai
+               JOIN assets a ON a.id = ai.asset_id
+               LEFT JOIN asset_meta am ON am.asset_id = a.id
+               WHERE ai.role = 'destination'
+               GROUP BY label
+               ORDER BY count DESC
+               LIMIT ?""",
+            (limit,),
+        ).fetchall()
+        cameras = conn.execute(
+            """WITH asset_meta AS (
+                   SELECT asset_id,
+                          MAX(TRIM(COALESCE(json_extract(raw_json, '$.camera_make'), '') || ' ' ||
+                                   COALESCE(json_extract(raw_json, '$.camera_model'), ''))) AS label
+                   FROM metadata_extractions
+                   GROUP BY asset_id
+               )
+               SELECT am.label AS label,
+                      COUNT(*) AS count,
+                      COALESCE(SUM(a.size), 0) AS bytes
+               FROM asset_instances ai
+               JOIN assets a ON a.id = ai.asset_id
+               LEFT JOIN asset_meta am ON am.asset_id = a.id
+               WHERE ai.role = 'destination'
+                 AND am.label <> ''
+               GROUP BY am.label
+               ORDER BY count DESC
+               LIMIT ?""",
+            (limit,),
+        ).fetchall()
+
+    def rows(values):
+        return [{'label': row['label'], 'count': row['count'] or 0, 'bytes': row['bytes'] or 0} for row in values]
+
+    return {
+        'media': rows(media),
+        'years': rows(years),
+        'months': rows(months),
+        'extensions': rows(extensions),
+        'devices': rows(devices),
+        'cameras': rows(cameras),
+    }
 
 
 def create_ingest_plan(vault_id: int, mode: str = 'copy', summary: Optional[dict] = None) -> int:
@@ -852,6 +1234,53 @@ def get_import_files(import_id: int, limit: int = 500, reason: Optional[str] = N
             params,
         ).fetchall()
     return [dict(row) for row in rows]
+
+
+def summarize_import_decisions(import_id: int) -> dict:
+    """Return grouped decision data for an import without loading every file row."""
+    with _get_conn() as conn:
+        by_reason = conn.execute(
+            """SELECT COALESCE(reason, 'unknown') AS label,
+                      COALESCE(decision, 'review') AS decision,
+                      COALESCE(media_type, 'media') AS media_type,
+                      COALESCE(status, 'planned') AS status,
+                      COUNT(*) AS count,
+                      COALESCE(SUM(size), 0) AS bytes
+               FROM import_files
+               WHERE import_id=?
+               GROUP BY label, decision, media_type, status
+               ORDER BY count DESC""",
+            (import_id,),
+        ).fetchall()
+        by_media = conn.execute(
+            """SELECT COALESCE(media_type, 'media') AS label,
+                      COUNT(*) AS count,
+                      COALESCE(SUM(size), 0) AS bytes
+               FROM import_files
+               WHERE import_id=?
+               GROUP BY COALESCE(media_type, 'media')
+               ORDER BY count DESC""",
+            (import_id,),
+        ).fetchall()
+        by_status = conn.execute(
+            """SELECT COALESCE(status, 'planned') AS label,
+                      COUNT(*) AS count,
+                      COALESCE(SUM(size), 0) AS bytes
+               FROM import_files
+               WHERE import_id=?
+               GROUP BY COALESCE(status, 'planned')
+               ORDER BY count DESC""",
+            (import_id,),
+        ).fetchall()
+
+    def rows(values):
+        return [{'label': row['label'], 'count': row['count'] or 0, 'bytes': row['bytes'] or 0} for row in values]
+
+    return {
+        'reasonGroups': [dict(row) for row in by_reason],
+        'mediaGroups': rows(by_media),
+        'statusGroups': rows(by_status),
+    }
 
 
 def get_import_by_plan(plan_id: int) -> Optional[sqlite3.Row]:

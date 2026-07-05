@@ -20,9 +20,14 @@ def setup_logging() -> None:
     formatter = logging.Formatter(
         "%(asctime)s %(levelname)s [%(threadName)s] %(name)s: %(message)s"
     )
-    file_handler = logging.FileHandler(LOG_PATH, encoding="utf-8")
-    file_handler.setFormatter(formatter)
-    root.addHandler(file_handler)
+    try:
+        file_handler = logging.FileHandler(LOG_PATH, encoding="utf-8")
+        file_handler.setFormatter(formatter)
+        root.addHandler(file_handler)
+    except OSError:
+        fallback = logging.StreamHandler(sys.stderr)
+        fallback.setFormatter(formatter)
+        root.addHandler(fallback)
     logging.getLogger("exifread").setLevel(logging.ERROR)
 
     def excepthook(exc_type, exc, tb):

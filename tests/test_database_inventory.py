@@ -31,6 +31,36 @@ def test_save_file_record_persists_device_fields(tmp_path, monkeypatch):
     assert rows[0]['size_bytes'] == 123
 
 
+def test_save_file_record_persists_metadata_extraction_and_search(tmp_path, monkeypatch):
+    import core.database as database
+
+    monkeypatch.setattr(database, 'DB_PATH', tmp_path / 'database.db')
+    database.init_db()
+
+    database.save_file_record(
+        path='D:/Fotos/IMG_0002.JPG',
+        hash_sha256='abc2',
+        hash_phash=None,
+        date_taken=datetime(2024, 4, 1, 8, 0, 0),
+        size=456,
+        media_type='photo',
+        extension='.jpg',
+        mtime=2.0,
+        camera_make='Canon',
+        camera_model='R6',
+        device_name='Canon R6',
+        has_exif=True,
+    )
+
+    with database._get_conn() as conn:
+        meta = conn.execute("SELECT * FROM metadata_extractions WHERE path=?", ('D:/Fotos/IMG_0002.JPG',)).fetchone()
+        search = conn.execute("SELECT path FROM catalog_search WHERE catalog_search MATCH ?", ('Canon',)).fetchall()
+
+    assert meta['extractor'] == 'photovault-core'
+    assert 'Canon R6' in meta['raw_json']
+    assert [row['path'] for row in search] == ['D:/Fotos/IMG_0002.JPG']
+
+
 def test_save_source_tracks_role_and_file_source_id(tmp_path, monkeypatch):
     import core.database as database
 

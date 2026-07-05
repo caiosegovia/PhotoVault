@@ -13,6 +13,7 @@ from core.database import (
     get_import,
     get_import_files,
     save_asset_instance,
+    save_asset_metadata,
     save_audit_event,
     save_source,
     set_import_plan,
@@ -23,7 +24,8 @@ from core.database import (
 )
 from core.identity import MediaIdentity, identify_media, identity_to_asset
 from core.ingestion import ensure_vault
-from core.scanner import scan_directory
+from core.safety import validate_import_paths
+from core.scanner import ScanReport, scan_directory
 from core.vault import VaultConfig, canonical_path
 
 
@@ -65,6 +67,25 @@ def _persist_identity(identity: MediaIdentity, source_id: int, role: str) -> int
         role=role,
         quality_score=identity.quality_score,
     )
+    save_asset_metadata(
+        asset_id=asset_id,
+        path=str(identity.path),
+        extractor='photovault-identity',
+        mtime=identity.path.stat().st_mtime,
+        raw={
+            'sha256': identity.sha256,
+            'size': identity.size,
+            'media_type': identity.media_type,
+            'extension': identity.extension,
+            'date_taken': identity.date_taken,
+            'width': identity.width,
+            'height': identity.height,
+            'duration': identity.duration,
+            'has_exif': identity.has_exif,
+            'device_name': identity.device_name,
+            'quality_score': identity.quality_score,
+        },
+    )
     return asset_id
 
 
@@ -83,6 +104,7 @@ def create_import_analysis(
     """Analyze one source folder as an auditable import into a permanent vault."""
     if not source_path.exists():
         raise FileNotFoundError(f'Origem nao encontrada: {source_path}')
+    validate_import_paths(source_path, vault_root)
 
     vault = ensure_vault(vault_root, pattern)
     import_name = name or _default_import_name(source_path)
@@ -113,7 +135,8 @@ def create_import_analysis(
     log.info("import analysis start import_id=%s source=%s vault=%s", import_id, source_path, vault_root)
 
     try:
-        for path in scan_directory(source_path):
+        scan_report = ScanReport()
+        for path in scan_directory(source_path, report=scan_report):
             analysis.files_found += 1
             if callback:
                 callback(path, analysis.files_found)
@@ -193,7 +216,10 @@ def create_import_analysis(
                     analysis.errors,
                 )
 
+        analysis.errors += len(scan_report.errors)
         summary = import_summary_from_analysis(analysis)
+        if scan_report.errors:
+            summary['summary']['scan_errors'] = scan_report.errors[:100]
         update_import_summary(import_id, summary)
         update_import_status(import_id, 'analyzed')
         save_audit_event(

@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 
 def test_create_import_analysis_persists_timeline_and_files(tmp_path, monkeypatch):
     import core.database as database
@@ -55,3 +57,19 @@ def test_execute_import_updates_import_status_and_copies_new_files(tmp_path, mon
     assert row['bytes_imported'] == len(b'photo-bytes')
     assert files[0]['status'] == 'done'
     assert copied.exists()
+
+
+def test_create_import_analysis_rejects_source_inside_vault(tmp_path, monkeypatch):
+    import core.database as database
+    import core.imports as imports
+
+    monkeypatch.setattr(database, 'DB_PATH', tmp_path / 'database.db')
+    database.init_db()
+
+    vault = tmp_path / 'vault'
+    src = vault / 'camera'
+    src.mkdir(parents=True)
+    (src / 'photo.jpg').write_bytes(b'photo')
+
+    with pytest.raises(ValueError, match='origem esta dentro do vault'):
+        imports.create_import_analysis(src, vault)

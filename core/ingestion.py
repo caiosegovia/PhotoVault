@@ -1,5 +1,6 @@
 import shutil
 import logging
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
@@ -24,7 +25,8 @@ from core.database import (
 )
 from core.deduplicator import hash_file_full
 from core.identity import MediaIdentity, identity_to_asset, identify_media
-from core.scanner import scan_directory
+from core.safety import resolve_existing_or_parent, validate_import_paths
+from core.scanner import ScanReport, scan_directory
 from core.vault import VaultConfig, canonical_path
 
 
@@ -103,11 +105,16 @@ def build_ingest_plan(
         if not source.exists():
             log.warning("build_ingest_plan source_missing path=%s", source)
             continue
-        role = 'destination' if source.resolve() == vault_root.resolve() else 'origin'
+        source_resolved = resolve_existing_or_parent(source)
+        vault_resolved = resolve_existing_or_parent(vault_root)
+        role = 'destination' if source_resolved == vault_resolved else 'origin'
+        if role != 'destination':
+            validate_import_paths(source, vault_root)
         source_id = save_source(source.name or str(source), 'local', str(source), role=role)
         log.info("build_ingest_plan scanning source=%s role=%s", source, role)
 
-        for path in scan_directory(source):
+        scan_report = ScanReport()
+        for path in scan_directory(source, report=scan_report):
             result.scanned += 1
             if callback:
                 callback(path, result.scanned)
@@ -165,6 +172,9 @@ def build_ingest_plan(
                     result.errors,
                     source,
                 )
+        if scan_report.errors:
+            result.errors += len(scan_report.errors)
+            log.warning("build_ingest_plan scan_errors source=%s count=%s", source, len(scan_report.errors))
 
     save_audit_event(
         'ingest_plan',
@@ -184,25 +194,54 @@ def build_ingest_plan(
     return result
 
 
-def _copy_with_staging(src: Path, dst: Path, expected_sha256: Optional[str]) -> None:
+def _copy_with_staging(src: Path, dst: Path, expected_sha256: Optional[str],
+                       expected_size: Optional[int] = None,
+                       verify_mode: str = 'size') -> dict:
     dst.parent.mkdir(parents=True, exist_ok=True)
     staging = dst.with_name(f".{dst.name}.photovault-part")
     if staging.exists():
         staging.unlink()
-    shutil.copy2(src, staging)
-    actual = hash_file_full(staging)
-    if expected_sha256 and actual != expected_sha256:
+    started = time.perf_counter()
+    with src.open('rb') as source, staging.open('wb') as target:
+        shutil.copyfileobj(source, target, length=1024 * 1024 * 8)
+    copied_at = time.perf_counter()
+    shutil.copystat(src, staging)
+
+    if verify_mode == 'hash':
+        actual = hash_file_full(staging)
+        if expected_sha256 and actual != expected_sha256:
+            try:
+                staging.unlink()
+            except OSError:
+                pass
+            raise IOError('Verificacao de hash falhou')
+    elif expected_size is not None and staging.stat().st_size != expected_size:
         try:
             staging.unlink()
         except OSError:
             pass
-        raise IOError('Verificacao de hash falhou')
+        raise IOError('Verificacao de tamanho falhou')
+    verified_at = time.perf_counter()
     staging.replace(dst)
+    finished = time.perf_counter()
+    size = expected_size if expected_size is not None else dst.stat().st_size
+    total_seconds = max(finished - started, 0.000001)
+    copy_seconds = max(copied_at - started, 0.000001)
+    return {
+        'bytes': size or 0,
+        'copy_seconds': copy_seconds,
+        'verify_seconds': max(verified_at - copied_at, 0),
+        'finalize_seconds': max(finished - verified_at, 0),
+        'total_seconds': total_seconds,
+        'mbps': ((size or 0) / 1024 / 1024) / total_seconds,
+        'verify_mode': verify_mode,
+    }
 
 
 def execute_ingest_plan(
     plan_id: int,
-    callback: Optional[Callable[[int, int, Path], None]] = None,
+    callback: Optional[Callable[[int, int, Path, Optional[dict]], None]] = None,
+    verify_mode: str = 'size',
 ) -> dict:
     """Execute persisted ingest operations with staging and hash verification."""
     update_ingest_plan_status(plan_id, 'running')
@@ -212,29 +251,44 @@ def execute_ingest_plan(
         update_import_status(import_id, 'running')
     log.info("execute_ingest_plan start plan_id=%s", plan_id)
     operations = get_ingest_operations(plan_id)
-    stats = {'total': len(operations), 'processed': 0, 'skipped': 0, 'errors': 0, 'bytes_imported': 0}
+    started = time.perf_counter()
+    stats = {
+        'total': len(operations),
+        'processed': 0,
+        'skipped': 0,
+        'errors': 0,
+        'bytes_imported': 0,
+        'copy_seconds': 0.0,
+        'verify_seconds': 0.0,
+        'db_seconds': 0.0,
+        'finalize_seconds': 0.0,
+        'largest_file': {'path': '', 'bytes': 0, 'seconds': 0.0, 'mbps': 0.0},
+        'slowest_file': {'path': '', 'bytes': 0, 'seconds': 0.0, 'mbps': 0.0},
+    }
 
     try:
         for index, op in enumerate(operations):
             src = Path(op['src_path'])
             dst = Path(op['dst_path'])
-            if callback:
-                callback(index, len(operations), src)
+            if callback and index == 0:
+                callback(0, len(operations), src, {'event': 'start', **stats})
 
             if op['action'] == 'skip':
+                db_started = time.perf_counter()
                 update_ingest_operation_status(op['id'], 'skipped')
                 if import_id:
                     update_import_file_status(import_id, op['src_path'], 'skipped')
+                stats['db_seconds'] += time.perf_counter() - db_started
                 stats['skipped'] += 1
+                if callback and (index == len(operations) - 1 or (index + 1) % 25 == 0):
+                    callback(index + 1, len(operations), src, {'event': 'skip', **stats})
                 continue
 
-            update_ingest_operation_status(op['id'], 'running')
-            if import_id:
-                update_import_file_status(import_id, op['src_path'], 'running')
             try:
-                _copy_with_staging(src, dst, op['sha256'])
+                copy_metrics = _copy_with_staging(src, dst, op['sha256'], op['size'], verify_mode)
                 if op['action'] == 'move':
                     src.unlink()
+                db_started = time.perf_counter()
                 if op['asset_id']:
                     save_asset_instance(
                         asset_id=op['asset_id'],
@@ -245,15 +299,52 @@ def execute_ingest_plan(
                 update_ingest_operation_status(op['id'], 'done')
                 if import_id:
                     update_import_file_status(import_id, op['src_path'], 'done')
+                stats['db_seconds'] += time.perf_counter() - db_started
                 stats['processed'] += 1
                 stats['bytes_imported'] += op['size'] or 0
+                stats['copy_seconds'] += copy_metrics['copy_seconds']
+                stats['verify_seconds'] += copy_metrics['verify_seconds']
+                if copy_metrics['bytes'] > stats['largest_file']['bytes']:
+                    stats['largest_file'] = {
+                        'path': str(src),
+                        'bytes': copy_metrics['bytes'],
+                        'seconds': copy_metrics['total_seconds'],
+                        'mbps': copy_metrics['mbps'],
+                    }
+                if copy_metrics['total_seconds'] > stats['slowest_file']['seconds']:
+                    stats['slowest_file'] = {
+                        'path': str(src),
+                        'bytes': copy_metrics['bytes'],
+                        'seconds': copy_metrics['total_seconds'],
+                        'mbps': copy_metrics['mbps'],
+                    }
+                if callback and (index == len(operations) - 1 or (index + 1) % 10 == 0):
+                    callback(index + 1, len(operations), src, {'event': 'copied', **stats, 'last_file': copy_metrics})
+                log.info(
+                    "copy_metric plan_id=%s index=%s total=%s bytes=%s total_seconds=%.3f copy_seconds=%.3f verify_seconds=%.3f mbps=%.2f src=%s dst=%s",
+                    plan_id,
+                    index + 1,
+                    len(operations),
+                    copy_metrics['bytes'],
+                    copy_metrics['total_seconds'],
+                    copy_metrics['copy_seconds'],
+                    copy_metrics['verify_seconds'],
+                    copy_metrics['mbps'],
+                    src,
+                    dst,
+                )
             except Exception as exc:
                 log.exception("execute_ingest_plan operation_failed id=%s src=%s dst=%s", op['id'], src, dst)
+                db_started = time.perf_counter()
                 update_ingest_operation_status(op['id'], 'error', str(exc))
                 if import_id:
                     update_import_file_status(import_id, op['src_path'], 'error', str(exc))
+                stats['db_seconds'] += time.perf_counter() - db_started
                 stats['errors'] += 1
+                if callback:
+                    callback(index + 1, len(operations), src, {'event': 'error', **stats})
 
+        finalize_started = time.perf_counter()
         update_ingest_plan_status(plan_id, 'completed' if stats['errors'] == 0 else 'error')
         if import_id:
             update_import_summary(import_id, {
@@ -263,6 +354,7 @@ def execute_ingest_plan(
                 'bytes_imported': stats['bytes_imported'],
             })
             update_import_status(import_id, 'completed' if stats['errors'] == 0 else 'failed')
+        stats['finalize_seconds'] += time.perf_counter() - finalize_started
     except Exception:
         log.exception("execute_ingest_plan fatal plan_id=%s", plan_id)
         update_ingest_plan_status(plan_id, 'error')
@@ -270,6 +362,11 @@ def execute_ingest_plan(
             update_import_status(import_id, 'failed')
         raise
 
+    total_seconds = max(time.perf_counter() - started, 0.000001)
+    stats['total_seconds'] = total_seconds
+    stats['throughput_mbps'] = (stats['bytes_imported'] / 1024 / 1024) / total_seconds
+    audit_started = time.perf_counter()
     save_audit_event('ingest_plan', plan_id, 'executed', 'Plano de ingestao executado', stats)
+    stats['finalize_seconds'] += time.perf_counter() - audit_started
     log.info("execute_ingest_plan done plan_id=%s stats=%s", plan_id, stats)
     return stats

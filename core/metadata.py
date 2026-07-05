@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import Optional
 
 from core.device_detector import classify_device
+from core.runtime_tools import ffprobe_path
 from utils.constants import PHOTO_EXTENSIONS, VIDEO_EXTENSIONS
 
 
@@ -125,9 +126,12 @@ def _extract_video_date(path: Path) -> Optional[datetime]:
         pass
 
     # Try ffprobe
+    ffprobe = ffprobe_path()
+    if not ffprobe:
+        return None
     try:
         result = subprocess.run(
-            ['ffprobe', '-v', 'quiet', '-print_format', 'json',
+            [ffprobe, '-v', 'quiet', '-print_format', 'json',
              '-show_format', str(path)],
             capture_output=True, text=True, timeout=10
         )
@@ -152,9 +156,12 @@ def _extract_video_date(path: Path) -> Optional[datetime]:
 
 def _extract_video_metadata(path: Path) -> dict:
     fields = {'make': None, 'model': None, 'software': None, 'lens_model': None}
+    ffprobe = ffprobe_path()
+    if not ffprobe:
+        return fields
     try:
         result = subprocess.run(
-            ['ffprobe', '-v', 'quiet', '-print_format', 'json',
+            [ffprobe, '-v', 'quiet', '-print_format', 'json',
              '-show_format', '-show_streams', str(path)],
             capture_output=True, text=True, timeout=10
         )

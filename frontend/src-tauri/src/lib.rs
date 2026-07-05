@@ -53,10 +53,65 @@ async fn bridge(command: String, payload: Value) -> Result<Value, String> {
   .map_err(|err| err.to_string())?
 }
 
+#[tauri::command]
+async fn pick_folder_native(initial: Option<String>, title: Option<String>) -> Result<String, String> {
+  tauri::async_runtime::spawn_blocking(move || {
+    let mut dialog = rfd::FileDialog::new().set_title(title.as_deref().unwrap_or("Selecione uma pasta"));
+    if let Some(initial_dir) = initial {
+      let path = PathBuf::from(initial_dir);
+      if path.exists() {
+        dialog = dialog.set_directory(path);
+      }
+    }
+    Ok(dialog.pick_folder().map(|path| path.to_string_lossy().to_string()).unwrap_or_default())
+  })
+  .await
+  .map_err(|err| err.to_string())?
+}
+
+#[tauri::command]
+async fn open_path_native(path: String) -> Result<(), String> {
+  tauri::async_runtime::spawn_blocking(move || {
+    let target = PathBuf::from(path);
+    if !target.exists() {
+      return Err(format!("Caminho nao existe: {}", target.display()));
+    }
+    Command::new("explorer.exe")
+      .arg(target)
+      .spawn()
+      .map_err(|err| format!("Falha ao abrir no Explorer: {err}"))?;
+    Ok(())
+  })
+  .await
+  .map_err(|err| err.to_string())?
+}
+
+#[tauri::command]
+async fn reveal_path_native(path: String) -> Result<(), String> {
+  tauri::async_runtime::spawn_blocking(move || {
+    let target = PathBuf::from(path);
+    if !target.exists() {
+      return Err(format!("Caminho nao existe: {}", target.display()));
+    }
+    let mut command = Command::new("explorer.exe");
+    if target.is_file() {
+      command.arg(format!("/select,{}", target.display()));
+    } else {
+      command.arg(target);
+    }
+    command
+      .spawn()
+      .map_err(|err| format!("Falha ao localizar no Explorer: {err}"))?;
+    Ok(())
+  })
+  .await
+  .map_err(|err| err.to_string())?
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   tauri::Builder::default()
-    .invoke_handler(tauri::generate_handler![bridge])
+    .invoke_handler(tauri::generate_handler![bridge, pick_folder_native, open_path_native, reveal_path_native])
     .setup(|app| {
       if cfg!(debug_assertions) {
         app.handle().plugin(

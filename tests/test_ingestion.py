@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 
 def test_build_ingest_plan_skips_exact_duplicates_in_same_run(tmp_path, monkeypatch):
     import core.database as database
@@ -74,3 +76,19 @@ def test_build_ingest_plan_skips_asset_already_present_in_vault(tmp_path, monkey
     assert len(source_ops) == 1
     assert source_ops[0]['action'] == 'skip'
     assert source_ops[0]['reason'] == 'exact_duplicate_in_vault'
+
+
+def test_build_ingest_plan_rejects_vault_inside_origin(tmp_path, monkeypatch):
+    import core.database as database
+    import core.ingestion as ingestion
+
+    monkeypatch.setattr(database, 'DB_PATH', tmp_path / 'database.db')
+    database.init_db()
+
+    src = tmp_path / 'src'
+    vault = src / 'vault'
+    vault.mkdir(parents=True)
+    (src / 'photo.jpg').write_bytes(b'photo')
+
+    with pytest.raises(ValueError, match='vault esta dentro da origem'):
+        ingestion.build_ingest_plan([src], vault)
