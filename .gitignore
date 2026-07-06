@@ -16,10 +16,9 @@ __pycache__/
 venv/
 env/
 
-# PyInstaller build artifacts
+# Build artifacts
 build/
 dist/
-dist_perf/
 *.spec.bak
 
 # Frontend / Tauri build artifacts
@@ -28,8 +27,10 @@ frontend/dist/
 frontend/src-tauri/target/
 frontend/src-tauri/gen/
 frontend/src-tauri/target/
+frontend/.filter-test-dist/
 *.msi
 *.exe
+frontend/src-tauri/resources/exiftool/
 
 # Database & user data
 *.db

@@ -1,5 +1,6 @@
 import logging
 import shutil
+import subprocess
 from functools import lru_cache
 from pathlib import Path
 from typing import Optional
@@ -32,3 +33,33 @@ def ffprobe_path() -> Optional[str]:
 
 def has_ffmpeg() -> bool:
     return ffmpeg_path() is not None
+
+
+@lru_cache(maxsize=1)
+def exiftool_path() -> Optional[str]:
+    """Return ExifTool only when the operating system provides it on PATH."""
+    return shutil.which("exiftool") or shutil.which("exiftool.exe")
+
+
+@lru_cache(maxsize=1)
+def exiftool_version() -> Optional[str]:
+    """Return the ExifTool version without making it a hard dependency."""
+    tool = exiftool_path()
+    if not tool:
+        return None
+    try:
+        result = subprocess.run(
+            [tool, "-ver"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip() or None
+    except Exception as exc:
+        log.debug("exiftool version check failed: %s", exc)
+    return None
+
+
+def has_exiftool() -> bool:
+    return exiftool_path() is not None

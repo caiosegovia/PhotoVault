@@ -2,6 +2,11 @@ use serde_json::Value;
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 fn repo_root() -> PathBuf {
   PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -19,7 +24,8 @@ fn python_path() -> PathBuf {
 async fn bridge(command: String, payload: Value) -> Result<Value, String> {
   tauri::async_runtime::spawn_blocking(move || {
     let root = repo_root();
-    let mut child = Command::new(python_path())
+    let mut command_builder = Command::new(python_path());
+    command_builder
       .arg(root.join("bridge.py"))
       .arg(command)
       .current_dir(&root)
@@ -27,7 +33,11 @@ async fn bridge(command: String, payload: Value) -> Result<Value, String> {
       .env("PYTHONIOENCODING", "utf-8")
       .stdin(Stdio::piped())
       .stdout(Stdio::piped())
-      .stderr(Stdio::piped())
+      .stderr(Stdio::piped());
+    #[cfg(windows)]
+    command_builder.creation_flags(CREATE_NO_WINDOW);
+
+    let mut child = command_builder
       .spawn()
       .map_err(|err| format!("Falha ao iniciar bridge Python: {err}"))?;
 

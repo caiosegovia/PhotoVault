@@ -14,6 +14,7 @@ O fluxo funcional ja cobre:
 - revisar decisoes por grupos acionaveis;
 - copiar com staging, verificacao por tamanho e metricas de tempo/MB/s;
 - gerar thumbnails de fotos, RAW suportados e frames de video;
+- enriquecer metadados com ExifTool opcional instalado no sistema;
 - navegar pela galeria com filtros por tipo, ano, mes, extensao, tamanho e problemas;
 - abrir ou localizar arquivos no Explorer;
 - visualizar cockpit com composicao da galeria, storage, imports recentes e sinais operacionais;
@@ -63,6 +64,7 @@ flowchart LR
     Core --> Ingestion["ingestion.py<br/>copia instrumentada"]
     Core --> Thumb["thumbnail_cache.py<br/>Pillow + imageio-ffmpeg"]
     Core --> Metadata["metadata.py<br/>EXIF, hachoir, ffprobe opcional"]
+    Core --> ExifTool["metadata_enrichment.py<br/>ExifTool opcional"]
     Core --> Safety["safety.py<br/>validacao de caminhos"]
 
     Core --> DB["SQLite<br/>%USERPROFILE%/.photovault/database.db"]
@@ -147,6 +149,22 @@ O cache fica em:
 
 Se o cache for apagado, o app recria os previews sob demanda pelo botao `Previews`.
 
+## Metadados Ricos
+
+O PhotoVault nao embarca mais binarios do ExifTool. Por seguranca, o enriquecimento rico so usa `exiftool` ou `exiftool.exe` quando a ferramenta esta instalada no sistema e disponivel no PATH.
+
+Quando presente, o botao `Enriquecer` no Cockpit ou `Metadados` na Galeria roda um enriquecimento retroativo dos assets ja importados. O processo salva o JSON bruto em `metadata_extractions`, promove campos normalizados para o catalogo e atualiza a busca/facetas.
+
+Campos aproveitados incluem:
+
+- camera, modelo, lente e software;
+- data original/criacao;
+- dimensoes, duracao, codec, bitrate e frame rate quando presentes;
+- GPS quando presente no arquivo;
+- tipo de dispositivo normalizado.
+
+Sem ExifTool, o app continua funcionando com os extractors internos (`exifread`, Pillow, hachoir e ffprobe quando disponivel) e mostra o status `Ausente` na interface.
+
 ## Metricas de Copia
 
 A execucao registra:
@@ -172,6 +190,7 @@ PhotoVault/
     ingestion.py
     identity.py
     metadata.py
+    metadata_enrichment.py
     runtime_tools.py
     safety.py
     scanner.py
@@ -207,6 +226,7 @@ O reset local do app limpa o estado do PhotoVault, mas nao apaga a galeria fisic
 - Node.js
 - Rust/Cargo
 - Visual Studio Build Tools com toolchain C++ para Tauri
+- ExifTool e opcional; se usado, deve vir de uma instalacao externa confiavel no PATH
 
 ## Setup
 
@@ -259,19 +279,20 @@ npx.cmd tauri build --debug --no-bundle
 
 - Tauri/Rust assumiu dialogo de pasta e abrir/localizar no Explorer.
 - A bridge Python ficou responsavel pelo contrato JSON e core de dominio.
-- `tkinter`, `customtkinter` e `matplotlib` sairam do caminho ativo.
+- `tkinter`, `customtkinter`, `matplotlib`, a GUI Python antiga e o build PyInstaller foram removidos do projeto ativo.
 - Dependencias frontend foram pinadas no `package.json`.
 - `imageio-ffmpeg` foi adicionado para previews de video.
 - `pytest.ini` usa cache local do projeto.
 - `scanner.py` passou a usar `os.walk` e relatorio estruturado.
 - Validacoes de caminho evitam importar vault dentro da origem, origem dentro do vault e resets perigosos.
+- O caminho ativo do app desktop e exclusivamente Tauri/React com bridge Python.
+- O enriquecimento retroativo com ExifTool foi mantido como capacidade opcional e nao bloqueante.
+- Binarios embutidos do ExifTool foram removidos do pacote Tauri; o app nao injeta mais `PHOTOVAULT_EXIFTOOL` na bridge.
 
 ## Pendencias Conhecidas
 
-- A pasta `gui/`, `main.py` e `photovault.spec` ainda existem como legado historico e devem ser removidos/arquivados em uma etapa separada.
 - O catalogo ja tem base para IA/agente, mas ainda nao chama modelos externos.
-- A extracao rica via ExifTool ainda e uma evolucao planejada.
-- As facetas de camera dependem de metadados realmente extraidos; imports antigos podem aparecer como `Desconhecido` ate receberem enriquecimento melhor.
+- As facetas de camera dependem de metadados realmente extraidos; imports antigos podem aparecer como `Desconhecido` ate receberem enriquecimento com ExifTool ou outro extractor rico.
 
 ## Licenca
 

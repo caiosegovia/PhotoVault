@@ -93,6 +93,22 @@ def test_save_source_tracks_role_and_file_source_id(tmp_path, monkeypatch):
     assert records[0]['source_id'] == source_id
 
 
+def test_save_vault_persists_gallery_label(tmp_path, monkeypatch):
+    import core.database as database
+
+    monkeypatch.setattr(database, 'DB_PATH', tmp_path / 'database.db')
+    database.init_db()
+
+    vault_id = database.save_vault('Arquivo da Familia', 'D:/PhotoVault', '{year}/{month:02d}')
+    database.save_vault('Memoria Permanente', 'D:/PhotoVault', '{year}/{extension}')
+
+    latest = database.get_latest_vault()
+
+    assert latest['id'] == vault_id
+    assert latest['label'] == 'Memoria Permanente'
+    assert latest['pattern'] == '{year}/{extension}'
+
+
 def test_query_gallery_records_filters_quality_role_and_media_type(tmp_path, monkeypatch):
     import core.database as database
 

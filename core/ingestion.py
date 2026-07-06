@@ -31,6 +31,7 @@ from core.vault import VaultConfig, canonical_path
 
 
 log = logging.getLogger(__name__)
+CAPACITY_RESERVE_BYTES = 1024 ** 3
 
 
 @dataclass
@@ -46,6 +47,60 @@ class IngestPlanResult:
     @property
     def total(self) -> int:
         return len(self.operations)
+
+
+def _format_capacity(value: int) -> str:
+    if value < 1024:
+        return f"{value} B"
+    if value < 1024 ** 2:
+        return f"{value / 1024:.1f} KB"
+    if value < 1024 ** 3:
+        return f"{value / 1024 ** 2:.1f} MB"
+    return f"{value / 1024 ** 3:.2f} GB"
+
+
+def _usage_path(path: Path) -> Path:
+    current = path if path.exists() else path.parent
+    while not current.exists() and current != current.parent:
+        current = current.parent
+    return current
+
+
+def _ensure_capacity_for_operations(operations: list, reserve_bytes: int = CAPACITY_RESERVE_BYTES) -> None:
+    required_by_volume: dict[str, dict[str, object]] = {}
+    for op in operations:
+        if op['action'] not in {'copy', 'move'} or op['status'] in {'done', 'skipped'}:
+            continue
+        dst = Path(op['dst_path'])
+        usage_path = _usage_path(dst)
+        key = usage_path.anchor or str(usage_path)
+        bucket = required_by_volume.setdefault(key, {'path': usage_path, 'required': 0})
+        bucket['required'] = int(bucket['required']) + int(op['size'] or 0)
+
+    for bucket in required_by_volume.values():
+        required = int(bucket['required'])
+        if required <= 0:
+            continue
+        usage = shutil.disk_usage(str(bucket['path']))
+        needed = required + reserve_bytes
+        if needed > usage.free:
+            raise RuntimeError(
+                "Espaco insuficiente no destino: "
+                f"faltam {_format_capacity(needed - usage.free)}. "
+                f"Plano restante {_format_capacity(required)}, livre {_format_capacity(usage.free)}, "
+                f"reserva {_format_capacity(reserve_bytes)}."
+            )
+
+
+def _ensure_capacity_for_file(dst: Path, size: int, reserve_bytes: int = CAPACITY_RESERVE_BYTES) -> None:
+    usage = shutil.disk_usage(str(_usage_path(dst)))
+    needed = int(size or 0) + reserve_bytes
+    if needed > usage.free:
+        raise RuntimeError(
+            "Espaco insuficiente durante a copia: "
+            f"arquivo {_format_capacity(int(size or 0))}, livre {_format_capacity(usage.free)}, "
+            f"reserva {_format_capacity(reserve_bytes)}."
+        )
 
 
 def ensure_vault(root_path: Path, pattern: str = '{year}/{month:02d}',
@@ -244,13 +299,21 @@ def execute_ingest_plan(
     verify_mode: str = 'size',
 ) -> dict:
     """Execute persisted ingest operations with staging and hash verification."""
-    update_ingest_plan_status(plan_id, 'running')
+    operations = get_ingest_operations(plan_id)
     import_row = get_import_by_plan(plan_id)
     import_id = int(import_row['id']) if import_row else None
+    try:
+        _ensure_capacity_for_operations(operations)
+    except Exception:
+        update_ingest_plan_status(plan_id, 'error')
+        if import_id:
+            update_import_status(import_id, 'failed')
+        raise
+
+    update_ingest_plan_status(plan_id, 'running')
     if import_id:
         update_import_status(import_id, 'running')
     log.info("execute_ingest_plan start plan_id=%s", plan_id)
-    operations = get_ingest_operations(plan_id)
     started = time.perf_counter()
     stats = {
         'total': len(operations),
@@ -285,6 +348,7 @@ def execute_ingest_plan(
                 continue
 
             try:
+                _ensure_capacity_for_file(dst, op['size'] or 0)
                 copy_metrics = _copy_with_staging(src, dst, op['sha256'], op['size'], verify_mode)
                 if op['action'] == 'move':
                     src.unlink()

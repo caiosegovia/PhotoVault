@@ -21,9 +21,10 @@ from core.database import (
 )
 from core.imports import create_import_analysis
 from core.ingestion import execute_ingest_plan
+from core.metadata_enrichment import enrich_gallery_metadata
 from core.patterns import validate_pattern
 from core.safety import validate_import_paths, validate_reset_root
-from core.runtime_tools import has_ffmpeg
+from core.runtime_tools import exiftool_version, has_exiftool, has_ffmpeg
 from core.thumbnail_cache import ensure_thumbnail, get_cached_thumbnail
 from utils.constants import CONFIG_DIR
 from utils.formatting import format_size
@@ -31,6 +32,7 @@ from utils.logging import get_log_path, setup_logging
 
 
 PROGRESS_PATH = CONFIG_DIR / "progress.json"
+GALLERY_ITEM_LIMIT = 50000
 log = logging.getLogger("photovault.bridge")
 
 try:
@@ -188,6 +190,10 @@ def _gallery_row(row: dict, include_thumb: bool = True) -> dict:
             if row.get('width') and row.get('height')
             else 'sem dimensoes'
         ),
+        'deviceName': row.get('device_name') or 'Desconhecido',
+        'deviceType': row.get('device_type') or 'unknown',
+        'cameraMake': row.get('camera_make') or '',
+        'cameraModel': row.get('camera_model') or '',
         'qualityScore': row.get('quality_score') or 0,
     }
 
@@ -235,7 +241,7 @@ def _import_insights(import_id: int | None) -> dict:
     }
 
 
-def _gallery_payload(limit: int = 36) -> dict:
+def _gallery_payload(limit: int = GALLERY_ITEM_LIMIT) -> dict:
     started = time.perf_counter()
     backfilled = backfill_catalog_metadata_from_gallery()
     backfill_at = time.perf_counter()
@@ -253,16 +259,24 @@ def _gallery_payload(limit: int = 36) -> dict:
         'withoutDate': gallery_total['without_date'],
         'bytes': format_size(gallery_total['bytes_total']),
         'bytesTotal': gallery_total['bytes_total'],
+        'firstDate': (gallery_total.get('first_date') or '')[:10],
+        'lastDate': (gallery_total.get('last_date') or '')[:10],
+        'yearCount': gallery_total.get('year_count') or 0,
+        'monthCount': gallery_total.get('month_count') or 0,
+        'extensionCount': gallery_total.get('extension_count') or 0,
         'breakdowns': {
             'media': [_bucket(row) for row in breakdowns['media']],
             'years': [_bucket(row) for row in breakdowns['years']],
             'months': [_bucket(row) for row in breakdowns['months']],
             'extensions': [_bucket(row) for row in breakdowns['extensions']],
             'devices': [_bucket(row) for row in breakdowns.get('devices', [])],
+            'deviceTypes': [_bucket(row) for row in breakdowns.get('deviceTypes', [])],
             'cameras': [_bucket(row) for row in breakdowns.get('cameras', [])],
         },
         'capabilities': {
             'ffmpegAvailable': has_ffmpeg(),
+            'exiftoolAvailable': has_exiftool(),
+            'exiftoolVersion': exiftool_version(),
         },
         'timings': {
             'backfillCount': backfilled,
@@ -309,17 +323,18 @@ def state(_payload: dict) -> dict:
     imports_at = time.perf_counter()
     selected_id = imports[0]['id'] if imports else None
     files = []
-    pending = imports[0]['bytesNew'] if imports else 0
+    pending = imports[0]['bytesNew'] if imports and imports[0]['status'] in {'ready', 'running'} else 0
     vault_path = str(vault['root_path']) if vault else ''
     insights = _import_insights(selected_id)
     insights_at = time.perf_counter()
-    gallery_data = _gallery_payload(36)
+    gallery_data = _gallery_payload(GALLERY_ITEM_LIMIT)
     gallery_at = time.perf_counter()
     progress_data = _progress_payload()
     progress_at = time.perf_counter()
     return {
         'vault': {
             'id': vault['id'] if vault else None,
+            'name': vault['label'] if vault else 'Galeria PhotoVault',
             'path': vault_path,
             'pattern': vault['pattern'] if vault else '{year}/{month:02d}',
         },
@@ -344,14 +359,17 @@ def state(_payload: dict) -> dict:
 def set_vault(payload: dict) -> dict:
     init_db()
     path = payload.get('path')
+    name = (payload.get('name') or 'Galeria PhotoVault').strip()
     pattern = payload.get('pattern') or '{year}/{month:02d}'
+    if not name:
+        raise ValueError('Nome da galeria obrigatorio')
     if not path:
         raise ValueError('Vault path obrigatório')
     if not validate_pattern(pattern):
         raise ValueError('Padrao de organizacao invalido')
     Path(path).mkdir(parents=True, exist_ok=True)
-    vault_id = save_vault('Galeria PhotoVault', path, pattern)
-    return {'ok': True, 'vault': {'id': vault_id, 'path': path, 'pattern': pattern}}
+    vault_id = save_vault(name, path, pattern)
+    return {'ok': True, 'vault': {'id': vault_id, 'name': name, 'path': path, 'pattern': pattern}}
 
 
 def analyze_import(payload: dict) -> dict:
@@ -408,13 +426,13 @@ def analyze_import(payload: dict) -> dict:
 def files(payload: dict) -> dict:
     init_db()
     import_id = int(payload.get('importId'))
-    limit = int(payload.get('limit') or 1000)
+    limit = int(payload.get('limit') or GALLERY_ITEM_LIMIT)
     return {'files': [_file_row(item) for item in get_import_files(import_id, limit=limit)]}
 
 
 def gallery(payload: dict) -> dict:
     init_db()
-    limit = int(payload.get('limit') or 120)
+    limit = int(payload.get('limit') or GALLERY_ITEM_LIMIT)
     ensure = bool(payload.get('ensureThumbnails'))
     assets = list_gallery_assets(limit)
     items = [_gallery_row(item, include_thumb=not ensure) for item in assets]
@@ -428,6 +446,41 @@ def gallery(payload: dict) -> dict:
     payload = _gallery_payload(limit)
     payload['items'] = items
     return payload
+
+
+def enrich_metadata(payload: dict) -> dict:
+    init_db()
+    limit = int(payload.get('limit') or 1000)
+    log.info("bridge enrich_metadata start limit=%s", limit)
+    _write_progress('metadata', 'Enriquecendo metadados da galeria...', total=limit)
+
+    def on_progress(current: int, total: int, path: Path) -> None:
+        if current == 1 or current == total or current % 5 == 0:
+            _write_progress(
+                'metadata',
+                f'ExifTool processando {current} de {total}...',
+                current=current,
+                total=total,
+                path=str(path),
+            )
+
+    result = enrich_gallery_metadata(limit=limit, callback=on_progress)
+    status = 'warning' if result.unavailable else 'done'
+    message = (
+        'ExifTool nao encontrado. Instale o ExifTool e tente novamente.'
+        if result.unavailable
+        else f'Metadados enriquecidos: {result.enriched} atualizados, {result.skipped} ignorados, {result.errors} erros.'
+    )
+    _write_progress(
+        'metadata',
+        message,
+        current=result.total,
+        total=result.total,
+        status=status,
+        metrics=result.as_dict(),
+    )
+    log.info("bridge enrich_metadata done result=%s", result.as_dict())
+    return {'ok': not result.unavailable, 'result': result.as_dict(), **state({})}
 
 
 def import_insights(payload: dict) -> dict:
@@ -507,13 +560,30 @@ def execute_import(payload: dict) -> dict:
         )
 
     verify_mode = payload.get('verifyMode') or 'size'
-    result = execute_ingest_plan(int(plan_id), callback=on_progress, verify_mode=verify_mode)
+    try:
+        result = execute_ingest_plan(int(plan_id), callback=on_progress, verify_mode=verify_mode)
+    except Exception as exc:
+        _write_progress(
+            'execution',
+            str(exc),
+            status='error',
+            metrics={
+                'elapsedSeconds': max(time.perf_counter() - execution_started, 0.001),
+                'throughputMbps': 0,
+                'bytesImported': 0,
+                'filesCopied': 0,
+                'filesSkipped': 0,
+                'filesErrored': 1,
+            },
+        )
+        raise
+    final_status = 'done' if result.get('errors', 0) == 0 else 'error'
     _write_progress(
         'execution',
         f'Execucao concluida: {result.get("processed", 0)} copiados, {result.get("skipped", 0)} ignorados, {result.get("errors", 0)} erros em {result.get("total_seconds", 0):.1f}s ({result.get("throughput_mbps", 0):.1f} MB/s).',
         current=result.get('total', 0),
         total=result.get('total', 0),
-        status='done',
+        status=final_status,
         metrics={
             'elapsedSeconds': result.get('total_seconds', 0),
             'throughputMbps': result.get('throughput_mbps', 0),
@@ -571,6 +641,7 @@ COMMANDS = {
     'execute_import': execute_import,
     'reset_all': reset_all,
     'gallery': gallery,
+    'enrich_metadata': enrich_metadata,
     'progress': progress,
     'logs': logs,
 }

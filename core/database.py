@@ -375,6 +375,130 @@ def save_asset_metadata(asset_id: int, path: str, extractor: str, raw: dict,
         )
 
 
+def list_destination_assets_for_enrichment(limit: int = 1000) -> list[dict]:
+    """Return destination assets ordered by items that still need ExifTool first."""
+    with _get_conn() as conn:
+        rows = conn.execute(
+            """SELECT
+                   ai.path AS path,
+                   ai.file_id AS file_id,
+                   a.id AS asset_id,
+                   a.media_type AS media_type,
+                   a.extension AS extension,
+                   a.date_taken AS date_taken,
+                   a.width AS width,
+                   a.height AS height,
+                   a.duration AS duration,
+                   me.id AS exiftool_row_id
+               FROM asset_instances ai
+               JOIN assets a ON a.id = ai.asset_id
+               LEFT JOIN metadata_extractions me
+                    ON me.asset_id = a.id
+                   AND me.path = ai.path
+                   AND me.extractor = 'exiftool'
+                   AND me.status = 'ok'
+               WHERE ai.role = 'destination'
+               ORDER BY
+                   CASE WHEN me.id IS NULL THEN 0 ELSE 1 END,
+                   ai.id DESC
+               LIMIT ?""",
+            (limit,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def _metadata_date(value: object) -> Optional[str]:
+    if value is None:
+        return None
+    return value.isoformat() if hasattr(value, 'isoformat') else str(value)
+
+
+def apply_asset_metadata_enrichment(asset_id: int, path: str, extractor: str,
+                                    extractor_version: Optional[str], status: str,
+                                    raw: dict, normalized: dict,
+                                    mtime: Optional[float] = None,
+                                    file_id: Optional[int] = None) -> None:
+    """Persist rich metadata and promote normalized fields to the catalog."""
+    date_taken = _metadata_date(normalized.get('date_taken'))
+    media_type = normalized.get('media_type')
+    extension = normalized.get('extension')
+    width = normalized.get('width')
+    height = normalized.get('height')
+    duration = normalized.get('duration')
+    camera_make = normalized.get('camera_make')
+    camera_model = normalized.get('camera_model')
+    lens_model = normalized.get('lens_model')
+    software = normalized.get('software')
+    device_type = normalized.get('device_type')
+    device_name = normalized.get('device_name')
+    origin_hint = normalized.get('origin_hint')
+    has_exif = 1 if normalized.get('has_exif') else 0
+
+    with _get_conn() as conn:
+        instance = conn.execute(
+            "SELECT file_id FROM asset_instances WHERE asset_id=? AND path=?",
+            (asset_id, path),
+        ).fetchone()
+        resolved_file_id = file_id if file_id is not None else (instance['file_id'] if instance else None)
+        save_metadata_extraction_conn(
+            conn,
+            file_id=resolved_file_id,
+            asset_id=asset_id,
+            path=path,
+            extractor=extractor,
+            extractor_version=extractor_version,
+            mtime=mtime,
+            status=status,
+            raw=raw,
+        )
+        if status == 'ok':
+            conn.execute(
+                """UPDATE assets
+                   SET media_type=COALESCE(?, media_type),
+                       extension=COALESCE(?, extension),
+                       date_taken=COALESCE(?, date_taken),
+                       width=COALESCE(?, width),
+                       height=COALESCE(?, height),
+                       duration=COALESCE(?, duration),
+                       updated_at=CURRENT_TIMESTAMP
+                   WHERE id=?""",
+                (media_type, extension, date_taken, width, height, duration, asset_id),
+            )
+            if resolved_file_id:
+                conn.execute(
+                    """UPDATE files
+                       SET date_taken=COALESCE(?, date_taken),
+                           media_type=COALESCE(?, media_type),
+                           extension=COALESCE(?, extension),
+                           camera_make=COALESCE(?, camera_make),
+                           camera_model=COALESCE(?, camera_model),
+                           lens_model=COALESCE(?, lens_model),
+                           software=COALESCE(?, software),
+                           device_type=COALESCE(?, device_type),
+                           device_name=COALESCE(?, device_name),
+                           origin_hint=COALESCE(?, origin_hint),
+                           width=COALESCE(?, width),
+                           height=COALESCE(?, height),
+                           duration=COALESCE(?, duration),
+                           has_exif=MAX(has_exif, ?)
+                       WHERE id=?""",
+                    (
+                        date_taken, media_type, extension, camera_make, camera_model,
+                        lens_model, software, device_type, device_name, origin_hint,
+                        width, height, duration, has_exif, resolved_file_id,
+                    ),
+                )
+            refresh_catalog_search_conn(
+                conn,
+                path=path,
+                media_type=media_type,
+                extension=extension,
+                camera=' '.join(value for value in [camera_make, camera_model] if value),
+                lens=lens_model or '',
+                device=device_name or device_type or '',
+            )
+
+
 def backfill_catalog_metadata_from_gallery(limit: int = 2000) -> int:
     """Create lightweight metadata rows for existing destination assets."""
     from core.device_detector import classify_device
@@ -902,7 +1026,31 @@ def list_gallery_assets(limit: int = 80) -> list[dict]:
     """Return destination assets that make up the current vault gallery."""
     with _get_conn() as conn:
         rows = conn.execute(
-            """SELECT
+            """WITH asset_meta AS (
+                   SELECT asset_id,
+                          COALESCE(
+                            MAX(NULLIF(json_extract(raw_json, '$.device_name'), 'Desconhecido')),
+                            MAX(json_extract(raw_json, '$.device_name')),
+                            'Desconhecido'
+                          ) AS device_name,
+                          COALESCE(
+                            MAX(NULLIF(NULLIF(json_extract(raw_json, '$.device_type'), ''), 'unknown')),
+                            'unknown'
+                          ) AS device_type,
+                          MAX(COALESCE(json_extract(raw_json, '$.camera_make'), '')) AS camera_make,
+                          COALESCE(
+                            NULLIF(MAX(TRIM(COALESCE(json_extract(raw_json, '$.camera_make'), '') || ' ' ||
+                                            COALESCE(json_extract(raw_json, '$.camera_model'), ''))), ''),
+                            COALESCE(
+                              MAX(NULLIF(json_extract(raw_json, '$.device_name'), 'Desconhecido')),
+                              MAX(json_extract(raw_json, '$.device_name')),
+                              ''
+                            )
+                          ) AS camera_model
+                   FROM metadata_extractions
+                   GROUP BY asset_id
+               )
+               SELECT
                    ai.id AS instance_id,
                    ai.path AS path,
                    ai.quality_score AS quality_score,
@@ -914,9 +1062,21 @@ def list_gallery_assets(limit: int = 80) -> list[dict]:
                    a.date_taken AS date_taken,
                    a.width AS width,
                    a.height AS height,
-                   a.duration AS duration
+                   a.duration AS duration,
+                   COALESCE(am.device_name, 'Desconhecido') AS device_name,
+                   CASE
+                     WHEN COALESCE(am.device_type, 'unknown') <> 'unknown' THEN am.device_type
+                     WHEN lower(COALESCE(am.device_name, '')) LIKE '%dji%' OR lower(COALESCE(am.device_name, '')) LIKE '%drone%' THEN 'drone'
+                     WHEN lower(COALESCE(am.device_name, '')) LIKE '%iphone%' OR lower(COALESCE(am.device_name, '')) LIKE '%samsung%' OR lower(COALESCE(am.device_name, '')) LIKE '%sm-%' THEN 'phone'
+                     WHEN lower(COALESCE(am.device_name, '')) LIKE '%adobe%' OR lower(COALESCE(am.device_name, '')) LIKE '%lightroom%' THEN 'app'
+                     WHEN lower(COALESCE(am.device_name, '')) LIKE '%canon%' OR lower(COALESCE(am.device_name, '')) LIKE '%nikon%' OR lower(COALESCE(am.device_name, '')) LIKE '%sony%' OR lower(COALESCE(am.device_name, '')) LIKE '%fujifilm%' OR lower(COALESCE(am.device_name, '')) LIKE '%gopro%' THEN 'camera'
+                     ELSE 'unknown'
+                   END AS device_type,
+                   COALESCE(am.camera_make, '') AS camera_make,
+                   COALESCE(am.camera_model, '') AS camera_model
                FROM asset_instances ai
                JOIN assets a ON a.id = ai.asset_id
+               LEFT JOIN asset_meta am ON am.asset_id = a.id
                WHERE ai.role = 'destination'
                ORDER BY
                    CASE WHEN a.date_taken IS NULL THEN 1 ELSE 0 END,
@@ -937,7 +1097,12 @@ def gallery_totals() -> dict:
                    COALESCE(SUM(a.size), 0) AS bytes_total,
                    SUM(CASE WHEN a.media_type = 'photo' THEN 1 ELSE 0 END) AS photos,
                    SUM(CASE WHEN a.media_type = 'video' THEN 1 ELSE 0 END) AS videos,
-                   SUM(CASE WHEN a.date_taken IS NULL THEN 1 ELSE 0 END) AS without_date
+                   SUM(CASE WHEN a.date_taken IS NULL THEN 1 ELSE 0 END) AS without_date,
+                   MIN(a.date_taken) AS first_date,
+                   MAX(a.date_taken) AS last_date,
+                   COUNT(DISTINCT strftime('%Y', a.date_taken)) AS year_count,
+                   COUNT(DISTINCT strftime('%Y-%m', a.date_taken)) AS month_count,
+                   COUNT(DISTINCT a.extension) AS extension_count
                FROM asset_instances ai
                JOIN assets a ON a.id = ai.asset_id
                WHERE ai.role = 'destination'"""
@@ -948,6 +1113,11 @@ def gallery_totals() -> dict:
         'photos': row['photos'] or 0,
         'videos': row['videos'] or 0,
         'without_date': row['without_date'] or 0,
+        'first_date': row['first_date'],
+        'last_date': row['last_date'],
+        'year_count': row['year_count'] or 0,
+        'month_count': row['month_count'] or 0,
+        'extension_count': row['extension_count'] or 0,
     }
 
 
@@ -1023,11 +1193,58 @@ def gallery_breakdowns(limit: int = 8) -> dict:
                LIMIT ?""",
             (limit,),
         ).fetchall()
+        device_types = conn.execute(
+            """WITH asset_meta AS (
+                   SELECT asset_id,
+                          COALESCE(
+                            MAX(NULLIF(json_extract(raw_json, '$.device_name'), 'Desconhecido')),
+                            MAX(json_extract(raw_json, '$.device_name')),
+                            ''
+                          ) AS device_name,
+                          COALESCE(
+                            MAX(NULLIF(NULLIF(json_extract(raw_json, '$.device_type'), ''), 'unknown')),
+                            'unknown'
+                          ) AS device_type
+                   FROM metadata_extractions
+                   GROUP BY asset_id
+               ),
+               typed AS (
+                   SELECT a.id AS asset_id,
+                          a.size AS size,
+                          CASE
+                            WHEN COALESCE(am.device_type, 'unknown') <> 'unknown' THEN am.device_type
+                            WHEN lower(COALESCE(am.device_name, '')) LIKE '%dji%' OR lower(COALESCE(am.device_name, '')) LIKE '%drone%' THEN 'drone'
+                            WHEN lower(COALESCE(am.device_name, '')) LIKE '%iphone%' OR lower(COALESCE(am.device_name, '')) LIKE '%samsung%' OR lower(COALESCE(am.device_name, '')) LIKE '%sm-%' THEN 'phone'
+                            WHEN lower(COALESCE(am.device_name, '')) LIKE '%adobe%' OR lower(COALESCE(am.device_name, '')) LIKE '%lightroom%' THEN 'app'
+                            WHEN lower(COALESCE(am.device_name, '')) LIKE '%canon%' OR lower(COALESCE(am.device_name, '')) LIKE '%nikon%' OR lower(COALESCE(am.device_name, '')) LIKE '%sony%' OR lower(COALESCE(am.device_name, '')) LIKE '%fujifilm%' OR lower(COALESCE(am.device_name, '')) LIKE '%gopro%' THEN 'camera'
+                            ELSE 'unknown'
+                          END AS label
+                   FROM asset_instances ai
+                   JOIN assets a ON a.id = ai.asset_id
+                   LEFT JOIN asset_meta am ON am.asset_id = a.id
+                   WHERE ai.role = 'destination'
+               )
+               SELECT label,
+                      COUNT(*) AS count,
+                      COALESCE(SUM(size), 0) AS bytes
+               FROM typed
+               GROUP BY label
+               ORDER BY count DESC
+               LIMIT ?""",
+            (limit,),
+        ).fetchall()
         cameras = conn.execute(
             """WITH asset_meta AS (
                    SELECT asset_id,
-                          MAX(TRIM(COALESCE(json_extract(raw_json, '$.camera_make'), '') || ' ' ||
-                                   COALESCE(json_extract(raw_json, '$.camera_model'), ''))) AS label
+                          COALESCE(
+                            NULLIF(MAX(TRIM(COALESCE(json_extract(raw_json, '$.camera_make'), '') || ' ' ||
+                                            COALESCE(json_extract(raw_json, '$.camera_model'), ''))), ''),
+                            COALESCE(
+                              MAX(NULLIF(json_extract(raw_json, '$.device_name'), 'Desconhecido')),
+                              MAX(json_extract(raw_json, '$.device_name')),
+                              ''
+                            )
+                          ) AS label
                    FROM metadata_extractions
                    GROUP BY asset_id
                )
@@ -1039,6 +1256,7 @@ def gallery_breakdowns(limit: int = 8) -> dict:
                LEFT JOIN asset_meta am ON am.asset_id = a.id
                WHERE ai.role = 'destination'
                  AND am.label <> ''
+                 AND am.label <> 'Desconhecido'
                GROUP BY am.label
                ORDER BY count DESC
                LIMIT ?""",
@@ -1054,6 +1272,7 @@ def gallery_breakdowns(limit: int = 8) -> dict:
         'months': rows(months),
         'extensions': rows(extensions),
         'devices': rows(devices),
+        'deviceTypes': rows(device_types),
         'cameras': rows(cameras),
     }
 

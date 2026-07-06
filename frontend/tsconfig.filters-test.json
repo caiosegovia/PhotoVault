@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": ".filter-test-dist",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "isolatedModules": false
+  },
+  "include": ["src/galleryFilters.ts", "tests/galleryFilters.test.ts"]
+}
