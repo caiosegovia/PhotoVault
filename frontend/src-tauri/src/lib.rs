@@ -64,6 +64,9 @@ async fn bridge(app: tauri::AppHandle, command: String, payload: Value) -> Resul
     if let Some(ffprobe) = resource_path(&app, "ffprobe.exe") {
       command_builder.env("PHOTOVAULT_FFPROBE", ffprobe);
     }
+    if let Some(exiftool) = resource_path(&app, "exiftool/exiftool.exe") {
+      command_builder.env("PHOTOVAULT_EXIFTOOL", exiftool);
+    }
     #[cfg(windows)]
     command_builder.creation_flags(CREATE_NO_WINDOW);
 

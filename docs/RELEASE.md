@@ -69,6 +69,9 @@ cd <repo>
 New-Item -ItemType Directory -Force frontend\src-tauri\resources
 Copy-Item frontend\node_modules\ffmpeg-ffprobe-static\ffmpeg.exe frontend\src-tauri\resources\ffmpeg.exe -Force
 Copy-Item frontend\node_modules\ffmpeg-ffprobe-static\ffprobe.exe frontend\src-tauri\resources\ffprobe.exe -Force
+New-Item -ItemType Directory -Force frontend\src-tauri\resources\exiftool
+Copy-Item $env:USERPROFILE\.photovault\tools\exiftool.exe frontend\src-tauri\resources\exiftool\exiftool.exe -Force
+Copy-Item $env:USERPROFILE\.photovault\tools\exiftool_files frontend\src-tauri\resources\exiftool\exiftool_files -Recurse -Force
 .\.venv\Scripts\pyinstaller.exe --clean --onefile --name photovault-bridge --distpath frontend\src-tauri\resources --workpath build\pyinstaller --specpath build\pyinstaller bridge.py
 ```
 
@@ -78,7 +81,7 @@ Smoke test da bridge empacotada:
 '{}' | frontend\src-tauri\resources\photovault-bridge.exe diagnostics
 ```
 
-Observacao: `ffmpeg-ffprobe-static` ainda e uma dependencia temporaria de desenvolvimento/release de teste. Antes de distribuicao publica, decidir a estrategia LGPL/instalacao externa documentada.
+Observacao: o instalador de teste inclui Python/bridge, ffmpeg, ffprobe e ExifTool para permitir validacao em uma maquina Windows sem ambiente de desenvolvimento.
 
 ## 6. Build Desktop Debug
 

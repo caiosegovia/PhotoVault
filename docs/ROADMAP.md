@@ -251,7 +251,7 @@ Problema: o caminho debug funciona, mas release final precisa checklist e decisa
 Proposta:
 
 - implementado: bridge Python empacotada como `photovault-bridge.exe` via PyInstaller para reduzir dependencia da `.venv` em outro dispositivo;
-- implementado: `ffmpeg.exe` e `ffprobe.exe` entram como recursos do bundle de teste e sao passados para a bridge por variavel de ambiente;
+- implementado: `ffmpeg.exe`, `ffprobe.exe` e ExifTool entram como recursos do bundle de teste e sao passados para a bridge por variavel de ambiente;
 - validar Tauri release em maquina Windows limpa;
 - documentar instalador;
 - automatizar release no GitHub depois que o fluxo local estiver estavel.

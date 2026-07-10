@@ -41,7 +41,7 @@ Build de release para teste em outro Windows:
 frontend\src-tauri\target\release\bundle\
 ```
 
-O release usa `frontend\src-tauri\resources\photovault-bridge.exe` como bridge Python empacotada por PyInstaller. Veja `docs/RELEASE.md` para gerar os sidecars antes de compilar o instalador.
+O release usa `frontend\src-tauri\resources\photovault-bridge.exe` como bridge Python empacotada por PyInstaller e inclui `ffmpeg`, `ffprobe` e ExifTool como recursos do instalador de teste. Veja `docs/RELEASE.md` para gerar os sidecars antes de compilar o instalador.
 
 Para reconstruir:
 

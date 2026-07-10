@@ -38,7 +38,8 @@
     "resources": [
       "resources/photovault-bridge.exe",
       "resources/ffmpeg.exe",
-      "resources/ffprobe.exe"
+      "resources/ffprobe.exe",
+      "resources/exiftool"
     ],
     "icon": [
       "icons/32x32.png",
