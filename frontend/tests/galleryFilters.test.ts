@@ -1,4 +1,4 @@
-import { filterGalleryItems, hasMissingPreview, isRaw, isVideo, type GalleryFilter, type GalleryItem } from "../src/galleryFilters.js";
+import { filterGalleryItems, hasMissingPreview, isRaw, isVideo, normalizeCameraName, type GalleryFilter, type GalleryItem } from "../src/galleryFilters.js";
 
 function assertEqual<T>(actual: T, expected: T) {
   if (JSON.stringify(actual) !== JSON.stringify(expected)) {
@@ -14,6 +14,7 @@ const baseFilter: GalleryFilter = {
   deviceType: "all",
   device: "all",
   camera: "all",
+  lens: "all",
   size: "all",
   query: "",
   problem: "all",
@@ -37,6 +38,7 @@ function item(partial: Partial<GalleryItem>): GalleryItem {
     deviceType: partial.deviceType ?? "camera",
     cameraMake: partial.cameraMake ?? "Canon",
     cameraModel: partial.cameraModel ?? "EOS R6",
+    lensModel: partial.lensModel ?? "RF 24-70mm",
     qualityScore: partial.qualityScore ?? 0,
   };
 }
@@ -60,6 +62,8 @@ assertEqual(filterGalleryItems(items, { ...baseFilter, deviceType: "phone" }).ma
 assertEqual(filterGalleryItems(items, { ...baseFilter, device: "DJI FC7303" }).map((value) => value.id), [2]);
 assertEqual(filterGalleryItems(items, { ...baseFilter, device: "apple iphone 14 pro" }).map((value) => value.id), [3]);
 assertEqual(filterGalleryItems(items, { ...baseFilter, camera: "DJI Mini 4 Pro" }).map((value) => value.id), [4]);
+assertEqual(filterGalleryItems([item({ id: 5, deviceName: "DJI FC3582", deviceType: "drone", cameraMake: "", cameraModel: "FC3582" })], { ...baseFilter, camera: "DJI FC3582" }).map((value) => value.id), [5]);
+assertEqual(filterGalleryItems(items, { ...baseFilter, lens: "RF 24-70mm" }).map((value) => value.id), [1, 2, 3, 4]);
 assertEqual(filterGalleryItems(items, { ...baseFilter, device: "DJI/Drone", problem: "video" }).map((value) => value.id), [4]);
 assertEqual(filterGalleryItems(items, { ...baseFilter, size: "large" }).map((value) => value.id), [2]);
 assertEqual(filterGalleryItems(items, { ...baseFilter, size: "small" }).map((value) => value.id), [1, 3, 4]);
@@ -69,3 +73,5 @@ assertEqual(filterGalleryItems(items, { ...baseFilter, query: "iphone" }).map((v
 assertEqual(isRaw(items[1]), true);
 assertEqual(isVideo(items[2]), true);
 assertEqual(hasMissingPreview(items[0]), true);
+assertEqual(normalizeCameraName("", "FC3582", "DJI FC3582"), "DJI FC3582");
+assertEqual(normalizeCameraName("DJI", "DJI FC3582", ""), "DJI FC3582");

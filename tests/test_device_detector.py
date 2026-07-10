@@ -14,7 +14,17 @@ def test_classify_drone_from_dji_metadata():
     device = classify_device(make='DJI', model='FC3582')
 
     assert device.device_type == 'drone'
-    assert 'DJI' in device.normalized_name
+    assert device.make == 'DJI'
+    assert device.model == 'FC3582'
+    assert device.normalized_name == 'DJI FC3582'
+
+
+def test_classify_drone_normalizes_fc_without_make():
+    device = classify_device(model='FC3582')
+
+    assert device.device_type == 'drone'
+    assert device.make == 'DJI'
+    assert device.normalized_name == 'DJI FC3582'
 
 
 def test_classify_social_export_from_software():

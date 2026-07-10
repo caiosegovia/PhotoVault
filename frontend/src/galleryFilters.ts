@@ -6,6 +6,7 @@ export type GalleryFilter = {
   deviceType: string;
   device: string;
   camera: string;
+  lens: string;
   size: "all" | "large" | "small";
   query: string;
   problem: "all" | "missing-thumb" | "without-date" | "video" | "raw";
@@ -28,6 +29,21 @@ export type GalleryItem = {
   deviceType: string;
   cameraMake: string;
   cameraModel: string;
+  lensModel?: string;
+  software?: string;
+  gpsLatitude?: string | number;
+  gpsLongitude?: string | number;
+  fileType?: string;
+  mimeType?: string;
+  codec?: string;
+  bitrate?: string;
+  frameRate?: string | number;
+  iso?: string | number;
+  aperture?: string | number;
+  shutterSpeed?: string | number;
+  focalLength?: string | number;
+  metadataSource?: string;
+  exiftoolVersion?: string;
   qualityScore: number;
 };
 
@@ -49,6 +65,17 @@ export function normalizeMedia(value?: string) {
 
 export function normalizeFacet(value?: string) {
   return clean(value).toLowerCase();
+}
+
+export function normalizeCameraName(make?: string, model?: string, fallback?: string) {
+  const rawMake = clean(make);
+  let rawModel = clean(model);
+  const upperMake = rawMake.toUpperCase();
+  const upperModel = rawModel.toUpperCase();
+  const isDji = upperMake.includes("DJI") || upperModel.startsWith("FC") || upperModel.startsWith("DJI ");
+  if (upperModel.startsWith("DJI ")) rawModel = rawModel.slice(4).trim();
+  if (isDji) return ["DJI", rawModel && rawModel.toUpperCase() !== "DJI" ? rawModel : ""].filter(Boolean).join(" ");
+  return [rawMake, rawModel].filter(Boolean).join(" ") || clean(fallback) || "Desconhecido";
 }
 
 export function itemYear(item: GalleryItem) {
@@ -80,6 +107,7 @@ export function filterGalleryItems(items: GalleryItem[], filter: GalleryFilter) 
   const deviceType = normalizeFacet(filter.deviceType);
   const device = normalizeFacet(filter.device);
   const camera = normalizeFacet(filter.camera);
+  const lens = normalizeFacet(filter.lens);
 
   return items.filter((item) => {
     const sizeBytes = Number(item.sizeBytes || 0);
@@ -89,7 +117,8 @@ export function filterGalleryItems(items: GalleryItem[], filter: GalleryFilter) 
     if (extension !== "all" && normalizeExtension(item.extension) !== extension) return false;
     if (deviceType !== "all" && normalizeFacet(item.deviceType) !== deviceType) return false;
     if (device !== "all" && normalizeFacet(item.deviceName || item.deviceType) !== device) return false;
-    if (camera !== "all" && normalizeFacet(`${item.cameraMake} ${item.cameraModel}`.trim()) !== camera) return false;
+    if (camera !== "all" && normalizeFacet(normalizeCameraName(item.cameraMake, item.cameraModel, item.deviceName)) !== camera) return false;
+    if (lens !== "all" && normalizeFacet(item.lensModel) !== lens) return false;
     if (filter.size === "large" && sizeBytes < 50 * 1024 * 1024) return false;
     if (filter.size === "small" && sizeBytes > 10 * 1024 * 1024) return false;
     if (filter.problem === "missing-thumb" && !hasMissingPreview(item)) return false;
@@ -98,7 +127,7 @@ export function filterGalleryItems(items: GalleryItem[], filter: GalleryFilter) 
     if (filter.problem === "raw" && !isRaw(item)) return false;
     if (
       query &&
-      !`${item.name} ${item.path} ${item.extension} ${item.date} ${item.deviceName} ${item.deviceType} ${item.cameraMake} ${item.cameraModel}`
+      !`${item.name} ${item.path} ${item.extension} ${item.date} ${item.deviceName} ${item.deviceType} ${normalizeCameraName(item.cameraMake, item.cameraModel, item.deviceName)} ${item.lensModel ?? ""} ${item.software ?? ""} ${item.codec ?? ""} ${item.fileType ?? ""}`
         .toLowerCase()
         .includes(query)
     ) return false;

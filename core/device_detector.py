@@ -28,6 +28,21 @@ def _contains_any(text: str, needles: tuple[str, ...]) -> bool:
     return any(n in low for n in needles)
 
 
+def _normalize_dji_model(model: Optional[str]) -> Optional[str]:
+    if not model:
+        return None
+    text = _clean(model)
+    if not text:
+        return None
+    upper = text.upper()
+    if upper.startswith("DJI "):
+        text = text[4:].strip()
+        upper = text.upper()
+    if upper == "DJI":
+        return None
+    return text
+
+
 def classify_device(
     make: str | None = None,
     model: str | None = None,
@@ -47,9 +62,11 @@ def classify_device(
     if _contains_any(low, ("whatsapp", "instagram", "facebook", "snapseed", "lightroom")):
         return DeviceInfo(make, model, software, lens_model, software or "App/exportacao", "app", origin_hint)
 
-    if make and "dji" in make.lower() or model and model.upper().startswith(("FC", "DJI")):
-        name = "DJI" if not model or model.upper() == "DJI" else f"DJI {model}"
-        return DeviceInfo(make, model, software, lens_model, name or "DJI", "drone", origin_hint)
+    is_dji = (make and "dji" in make.lower()) or (model and model.upper().startswith(("FC", "DJI")))
+    if is_dji:
+        normalized_model = _normalize_dji_model(model)
+        name = " ".join(v for v in ("DJI", normalized_model) if v)
+        return DeviceInfo("DJI", normalized_model, software, lens_model, name or "DJI", "drone", origin_hint)
 
     phone_makers = {
         "apple": "Apple",

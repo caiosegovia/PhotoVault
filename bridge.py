@@ -15,6 +15,7 @@ from core.database import (
     init_db,
     list_gallery_assets,
     list_imports,
+    processing_summary,
     save_vault,
     summarize_import_decisions,
     update_import_file_decision,
@@ -24,7 +25,7 @@ from core.ingestion import execute_ingest_plan
 from core.metadata_enrichment import enrich_gallery_metadata
 from core.patterns import validate_pattern
 from core.safety import validate_import_paths, validate_reset_root
-from core.runtime_tools import exiftool_version, has_exiftool, has_ffmpeg
+from core.runtime_tools import exiftool_status, exiftool_version, has_exiftool, has_ffmpeg
 from core.thumbnail_cache import ensure_thumbnail, get_cached_thumbnail
 from utils.constants import CONFIG_DIR
 from utils.formatting import format_size
@@ -194,6 +195,21 @@ def _gallery_row(row: dict, include_thumb: bool = True) -> dict:
         'deviceType': row.get('device_type') or 'unknown',
         'cameraMake': row.get('camera_make') or '',
         'cameraModel': row.get('camera_model') or '',
+        'lensModel': row.get('lens_model') or '',
+        'software': row.get('software') or '',
+        'gpsLatitude': row.get('gps_latitude') or '',
+        'gpsLongitude': row.get('gps_longitude') or '',
+        'fileType': row.get('file_type') or '',
+        'mimeType': row.get('mime_type') or '',
+        'codec': row.get('codec') or '',
+        'bitrate': row.get('bitrate') or '',
+        'frameRate': row.get('frame_rate') or '',
+        'iso': row.get('iso') or '',
+        'aperture': row.get('aperture') or '',
+        'shutterSpeed': row.get('shutter_speed') or '',
+        'focalLength': row.get('focal_length') or '',
+        'metadataSource': 'ExifTool' if row.get('exiftool_version') else 'PhotoVault',
+        'exiftoolVersion': row.get('exiftool_version') or '',
         'qualityScore': row.get('quality_score') or 0,
     }
 
@@ -241,7 +257,21 @@ def _import_insights(import_id: int | None) -> dict:
     }
 
 
-def _gallery_payload(limit: int = GALLERY_ITEM_LIMIT) -> dict:
+def _gallery_items(assets: list[dict], ensure_thumbnails: bool = False) -> list[dict]:
+    items = []
+    for row in assets:
+        path = Path(row.get('path') or '')
+        if ensure_thumbnails and path.exists():
+            ensure_thumbnail(path)
+        items.append(_gallery_row(row))
+    return items
+
+
+def _gallery_payload(
+    limit: int = GALLERY_ITEM_LIMIT,
+    ensure_thumbnails: bool = False,
+    include_items: bool = True,
+) -> dict:
     started = time.perf_counter()
     backfilled = backfill_catalog_metadata_from_gallery()
     backfill_at = time.perf_counter()
@@ -249,10 +279,12 @@ def _gallery_payload(limit: int = GALLERY_ITEM_LIMIT) -> dict:
     totals_at = time.perf_counter()
     breakdowns = gallery_breakdowns()
     breakdowns_at = time.perf_counter()
-    assets = list_gallery_assets(limit)
+    assets = list_gallery_assets(limit) if include_items else []
     assets_at = time.perf_counter()
+    items = _gallery_items(assets, ensure_thumbnails=ensure_thumbnails) if include_items else []
+    items_at = time.perf_counter()
     return {
-        'items': [_gallery_row(item) for item in assets],
+        'items': items,
         'total': gallery_total['total'],
         'photos': gallery_total['photos'],
         'videos': gallery_total['videos'],
@@ -277,6 +309,10 @@ def _gallery_payload(limit: int = GALLERY_ITEM_LIMIT) -> dict:
             'ffmpegAvailable': has_ffmpeg(),
             'exiftoolAvailable': has_exiftool(),
             'exiftoolVersion': exiftool_version(),
+            'exiftoolStatus': exiftool_status(),
+        },
+        'processing': {
+            'exiftool': processing_summary('exiftool'),
         },
         'timings': {
             'backfillCount': backfilled,
@@ -284,6 +320,7 @@ def _gallery_payload(limit: int = GALLERY_ITEM_LIMIT) -> dict:
             'totalsSeconds': totals_at - backfill_at,
             'breakdownsSeconds': breakdowns_at - totals_at,
             'assetsSeconds': assets_at - breakdowns_at,
+            'itemsSeconds': items_at - assets_at,
             'totalSeconds': time.perf_counter() - started,
         },
     }
@@ -327,7 +364,7 @@ def state(_payload: dict) -> dict:
     vault_path = str(vault['root_path']) if vault else ''
     insights = _import_insights(selected_id)
     insights_at = time.perf_counter()
-    gallery_data = _gallery_payload(GALLERY_ITEM_LIMIT)
+    gallery_data = _gallery_payload(0, include_items=False)
     gallery_at = time.perf_counter()
     progress_data = _progress_payload()
     progress_at = time.perf_counter()
@@ -434,18 +471,7 @@ def gallery(payload: dict) -> dict:
     init_db()
     limit = int(payload.get('limit') or GALLERY_ITEM_LIMIT)
     ensure = bool(payload.get('ensureThumbnails'))
-    assets = list_gallery_assets(limit)
-    items = [_gallery_row(item, include_thumb=not ensure) for item in assets]
-    if ensure:
-        hydrated = []
-        for row in assets:
-            path = Path(row.get('path') or '')
-            ensure_thumbnail(path) if path.exists() else None
-            hydrated.append(_gallery_row(row))
-        items = hydrated
-    payload = _gallery_payload(limit)
-    payload['items'] = items
-    return payload
+    return _gallery_payload(limit, ensure_thumbnails=ensure)
 
 
 def enrich_metadata(payload: dict) -> dict:

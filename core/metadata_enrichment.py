@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from core.device_detector import classify_device
-from core.runtime_tools import exiftool_path, exiftool_version
+from core.runtime_tools import exiftool_command, exiftool_path, exiftool_version
 from utils.constants import PHOTO_EXTENSIONS, VIDEO_EXTENSIONS
 
 
@@ -21,6 +21,7 @@ class EnrichmentResult:
     skipped: int = 0
     errors: int = 0
     unavailable: bool = False
+    processing: Optional[dict] = None
 
     def as_dict(self) -> dict:
         return {
@@ -30,6 +31,7 @@ class EnrichmentResult:
             "errors": self.errors,
             "unavailable": self.unavailable,
             "exiftoolVersion": exiftool_version(),
+            "processing": self.processing,
         }
 
 
@@ -114,19 +116,24 @@ def normalize_exiftool_metadata(path: Path, raw: dict) -> dict:
             raw,
             "DateTimeOriginal",
             "SubSecDateTimeOriginal",
+            "QuickTime:CreateDate",
+            "QuickTime:MediaCreateDate",
+            "QuickTime:TrackCreateDate",
             "CreateDate",
             "MediaCreateDate",
             "TrackCreateDate",
             "CreationDate",
+            "ContentCreateDate",
+            "DateCreated",
             "FileModifyDate",
         )
     )
-    make = _clean_text(_first(raw, "Make", "CameraMake", "QuickTime:Make"))
-    model = _clean_text(_first(raw, "Model", "CameraModelName", "QuickTime:Model"))
+    make = _clean_text(_first(raw, "Make", "CameraMake", "QuickTime:Make", "DeviceManufacturer"))
+    model = _clean_text(_first(raw, "Model", "CameraModelName", "QuickTime:Model", "DeviceModelName"))
     software = _clean_text(_first(raw, "Software", "Encoder", "CompressorName"))
     lens_model = _clean_text(_first(raw, "LensModel", "LensID", "Lens"))
-    width = _parse_int(_first(raw, "ImageWidth", "ExifImageWidth", "SourceImageWidth"))
-    height = _parse_int(_first(raw, "ImageHeight", "ExifImageHeight", "SourceImageHeight"))
+    width = _parse_int(_first(raw, "ImageWidth", "ExifImageWidth", "SourceImageWidth", "VideoFrameWidth", "TrackImageWidth", "MediaImageWidth"))
+    height = _parse_int(_first(raw, "ImageHeight", "ExifImageHeight", "SourceImageHeight", "VideoFrameHeight", "TrackImageHeight", "MediaImageHeight"))
     duration = _parse_float(_first(raw, "Duration", "MediaDuration", "TrackDuration"))
     device = classify_device(
         path=path,
@@ -137,6 +144,10 @@ def normalize_exiftool_metadata(path: Path, raw: dict) -> dict:
     )
     gps_lat = _parse_float(raw.get("GPSLatitude"))
     gps_lon = _parse_float(raw.get("GPSLongitude"))
+    iso = _parse_int(_first(raw, "ISO", "PhotographicSensitivity"))
+    aperture = _parse_float(_first(raw, "FNumber", "Aperture", "ApertureValue"))
+    shutter_speed = _parse_float(_first(raw, "ExposureTime", "ShutterSpeedValue"))
+    focal_length = _parse_float(_first(raw, "FocalLength", "FocalLengthIn35mmFormat"))
 
     normalized = {
         "date_taken": date_taken,
@@ -154,13 +165,17 @@ def normalize_exiftool_metadata(path: Path, raw: dict) -> dict:
         "duration": duration,
         "gps_latitude": gps_lat,
         "gps_longitude": gps_lon,
+        "iso": iso,
+        "aperture": aperture,
+        "shutter_speed": shutter_speed,
+        "focal_length": focal_length,
         "has_exif": bool(date_taken or make or model or lens_model or gps_lat or gps_lon),
         "exiftool": {
             "file_type": _clean_text(raw.get("FileType")),
             "mime_type": _clean_text(raw.get("MIMEType")),
-            "codec": _clean_text(_first(raw, "CompressorID", "CompressorName", "VideoCodec")),
-            "bitrate": _clean_text(_first(raw, "AvgBitrate", "VideoBitrate")),
-            "frame_rate": _parse_float(_first(raw, "VideoFrameRate", "FrameRate")),
+            "codec": _clean_text(_first(raw, "CompressorID", "CompressorName", "VideoCodec", "Compressor", "EncodingSettings")),
+            "bitrate": _clean_text(_first(raw, "AvgBitrate", "VideoBitrate", "OverallBitRate", "Bitrate")),
+            "frame_rate": _parse_float(_first(raw, "VideoFrameRate", "FrameRate", "CaptureFrameRate")),
         },
         "raw_exiftool": raw,
     }
@@ -168,11 +183,11 @@ def normalize_exiftool_metadata(path: Path, raw: dict) -> dict:
 
 
 def extract_exiftool_metadata(path: Path) -> dict:
-    tool = exiftool_path()
-    if not tool:
-        raise RuntimeError("ExifTool nao encontrado no PATH")
+    command = exiftool_command()
+    if not command:
+        raise RuntimeError("ExifTool nao encontrado ou nao executavel")
     result = subprocess.run(
-        [tool, "-j", "-n", "-api", "largefilesupport=1", str(path)],
+        [*command, "-j", "-n", "-api", "largefilesupport=1", str(path)],
         capture_output=True,
         text=True,
         timeout=30,
@@ -187,11 +202,12 @@ def extract_exiftool_metadata(path: Path) -> dict:
 
 
 def enrich_gallery_metadata(limit: int = 1000, callback: Optional[Callable[[int, int, Path], None]] = None) -> EnrichmentResult:
-    from core.database import apply_asset_metadata_enrichment, list_destination_assets_for_enrichment
+    from core.database import apply_asset_metadata_enrichment, list_destination_assets_for_enrichment, mark_processing_started, processing_summary
 
     result = EnrichmentResult()
     if not exiftool_path():
         result.unavailable = True
+        result.processing = processing_summary("exiftool")
         return result
 
     rows = list_destination_assets_for_enrichment(limit)
@@ -199,6 +215,7 @@ def enrich_gallery_metadata(limit: int = 1000, callback: Optional[Callable[[int,
     version = exiftool_version() or "unknown"
     for index, row in enumerate(rows, start=1):
         path = Path(row["path"])
+        mark_processing_started(row.get("processing_state_id"))
         if callback:
             callback(index, result.total, path)
         if not path.exists():
@@ -239,4 +256,5 @@ def enrich_gallery_metadata(limit: int = 1000, callback: Optional[Callable[[int,
                 normalized={},
                 mtime=path.stat().st_mtime if path.exists() else None,
             )
+    result.processing = processing_summary("exiftool")
     return result

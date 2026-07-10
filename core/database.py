@@ -214,6 +214,24 @@ def init_db() -> None:
                 raw_json TEXT,
                 UNIQUE(path, extractor)
             );
+            CREATE TABLE IF NOT EXISTS asset_processing_state (
+                id INTEGER PRIMARY KEY,
+                asset_id INTEGER NOT NULL,
+                instance_id INTEGER,
+                path TEXT NOT NULL,
+                processor TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                attempts INTEGER DEFAULT 0,
+                last_error TEXT,
+                source_mtime REAL,
+                source_size INTEGER,
+                processor_version TEXT,
+                first_requested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                started_at TIMESTAMP,
+                completed_at TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(asset_id, path, processor)
+            );
             CREATE TABLE IF NOT EXISTS catalog_tags (
                 id INTEGER PRIMARY KEY,
                 label TEXT UNIQUE NOT NULL,
@@ -254,6 +272,8 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_metadata_path ON metadata_extractions(path);
             CREATE INDEX IF NOT EXISTS idx_metadata_file ON metadata_extractions(file_id);
             CREATE INDEX IF NOT EXISTS idx_metadata_asset ON metadata_extractions(asset_id);
+            CREATE INDEX IF NOT EXISTS idx_processing_processor_status ON asset_processing_state(processor, status);
+            CREATE INDEX IF NOT EXISTS idx_processing_asset ON asset_processing_state(asset_id);
             CREATE INDEX IF NOT EXISTS idx_catalog_notes_asset ON catalog_notes(asset_id);
         """)
         try:
@@ -304,6 +324,8 @@ def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS idx_metadata_path ON metadata_extractions(path)",
             "CREATE INDEX IF NOT EXISTS idx_metadata_file ON metadata_extractions(file_id)",
             "CREATE INDEX IF NOT EXISTS idx_metadata_asset ON metadata_extractions(asset_id)",
+            "CREATE INDEX IF NOT EXISTS idx_processing_processor_status ON asset_processing_state(processor, status)",
+            "CREATE INDEX IF NOT EXISTS idx_processing_asset ON asset_processing_state(asset_id)",
             "CREATE INDEX IF NOT EXISTS idx_catalog_notes_asset ON catalog_notes(asset_id)",
         ]:
             try:
@@ -348,6 +370,213 @@ def refresh_catalog_search_conn(conn: sqlite3.Connection, path: str, media_type:
         pass
 
 
+def _path_stats(path: str) -> tuple[Optional[float], Optional[int]]:
+    try:
+        stat = Path(path).stat()
+        return stat.st_mtime, stat.st_size
+    except OSError:
+        return None, None
+
+
+def _state_error(raw: dict) -> Optional[str]:
+    value = raw.get('error') if isinstance(raw, dict) else None
+    return str(value) if value else None
+
+
+def _ensure_processing_state_conn(conn: sqlite3.Connection, asset_id: int, instance_id: Optional[int],
+                                  path: str, processor: str, status: str = 'pending',
+                                  source_mtime: Optional[float] = None,
+                                  source_size: Optional[int] = None,
+                                  processor_version: Optional[str] = None,
+                                  last_error: Optional[str] = None) -> None:
+    conn.execute(
+        """INSERT INTO asset_processing_state(
+               asset_id, instance_id, path, processor, status, source_mtime,
+               source_size, processor_version, last_error
+           )
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(asset_id, path, processor) DO UPDATE SET
+               instance_id=COALESCE(excluded.instance_id, asset_processing_state.instance_id),
+               path=excluded.path,
+               source_mtime=COALESCE(excluded.source_mtime, asset_processing_state.source_mtime),
+               source_size=COALESCE(excluded.source_size, asset_processing_state.source_size),
+               updated_at=CURRENT_TIMESTAMP""",
+        (asset_id, instance_id, path, processor, status, source_mtime, source_size, processor_version, last_error),
+    )
+
+
+def _finish_processing_state_conn(conn: sqlite3.Connection, asset_id: int, path: str, processor: str,
+                                  status: str, processor_version: Optional[str],
+                                  source_mtime: Optional[float], source_size: Optional[int],
+                                  last_error: Optional[str] = None) -> None:
+    row = conn.execute(
+        "SELECT id, instance_id FROM asset_processing_state WHERE asset_id=? AND path=? AND processor=?",
+        (asset_id, path, processor),
+    ).fetchone()
+    instance = conn.execute(
+        "SELECT id FROM asset_instances WHERE asset_id=? AND path=?",
+        (asset_id, path),
+    ).fetchone()
+    instance_id = instance['id'] if instance else (row['instance_id'] if row else None)
+    _ensure_processing_state_conn(
+        conn,
+        asset_id=asset_id,
+        instance_id=instance_id,
+        path=path,
+        processor=processor,
+        status=status,
+        source_mtime=source_mtime,
+        source_size=source_size,
+        processor_version=processor_version,
+        last_error=last_error,
+    )
+    conn.execute(
+        """UPDATE asset_processing_state
+           SET status=?,
+               processor_version=?,
+               source_mtime=?,
+               source_size=?,
+               last_error=?,
+               completed_at=CURRENT_TIMESTAMP,
+               updated_at=CURRENT_TIMESTAMP
+           WHERE asset_id=? AND path=? AND processor=?""",
+        (status, processor_version, source_mtime, source_size, last_error, asset_id, path, processor),
+    )
+
+
+def ensure_processing_coverage(processor: str = 'exiftool') -> dict:
+    """Ensure every destination asset has an explicit processing state."""
+    with _get_conn() as conn:
+        conn.execute(
+            """UPDATE asset_processing_state
+               SET status='pending', updated_at=CURRENT_TIMESTAMP
+               WHERE processor=? AND status='running'""",
+            (processor,),
+        )
+        metadata = conn.execute(
+            """SELECT me.asset_id, me.path, me.extractor_version, me.mtime, me.status, me.raw_json,
+                      ai.id AS instance_id, a.size AS source_size
+               FROM metadata_extractions me
+               LEFT JOIN asset_instances ai ON ai.asset_id = me.asset_id AND ai.path = me.path
+               LEFT JOIN assets a ON a.id = me.asset_id
+               WHERE me.extractor=? AND me.asset_id IS NOT NULL""",
+            (processor,),
+        ).fetchall()
+        for row in metadata:
+            status = row['status'] if row['status'] in {'ok', 'error', 'missing'} else 'error'
+            raw = json.loads(row['raw_json'] or '{}') if row['raw_json'] else {}
+            _ensure_processing_state_conn(
+                conn,
+                asset_id=int(row['asset_id']),
+                instance_id=row['instance_id'],
+                path=row['path'],
+                processor=processor,
+                status=status,
+                source_mtime=row['mtime'],
+                source_size=row['source_size'],
+                processor_version=row['extractor_version'],
+                last_error=_state_error(raw),
+            )
+            conn.execute(
+                """UPDATE asset_processing_state
+                   SET status=?, processor_version=?, source_mtime=?, source_size=?,
+                       last_error=?, completed_at=COALESCE(completed_at, CURRENT_TIMESTAMP),
+                       updated_at=CURRENT_TIMESTAMP
+                   WHERE asset_id=? AND path=? AND processor=?""",
+                (
+                    status,
+                    row['extractor_version'],
+                    row['mtime'],
+                    row['source_size'],
+                    _state_error(raw),
+                    row['asset_id'],
+                    row['path'],
+                    processor,
+                ),
+            )
+
+        destinations = conn.execute(
+            """SELECT ai.id AS instance_id, ai.asset_id, ai.path
+               FROM asset_instances ai
+               WHERE ai.role='destination'""",
+        ).fetchall()
+        for row in destinations:
+            mtime, size = _path_stats(row['path'])
+            _ensure_processing_state_conn(
+                conn,
+                asset_id=int(row['asset_id']),
+                instance_id=row['instance_id'],
+                path=row['path'],
+                processor=processor,
+                source_mtime=mtime,
+                source_size=size,
+            )
+
+        current = conn.execute(
+            """SELECT id, path, source_mtime, source_size
+               FROM asset_processing_state
+               WHERE processor=? AND status='ok'""",
+            (processor,),
+        ).fetchall()
+        for row in current:
+            mtime, size = _path_stats(row['path'])
+            if mtime is None:
+                continue
+            stored_mtime = row['source_mtime']
+            stored_size = row['source_size']
+            changed = (
+                stored_mtime is not None
+                and (abs(float(stored_mtime) - float(mtime)) > 0.001 or (stored_size is not None and int(stored_size) != int(size or 0)))
+            )
+            if changed:
+                conn.execute(
+                    """UPDATE asset_processing_state
+                       SET status='stale', source_mtime=?, source_size=?, updated_at=CURRENT_TIMESTAMP
+                       WHERE id=?""",
+                    (mtime, size, row['id']),
+                )
+    return processing_summary(processor)
+
+
+def processing_summary(processor: str = 'exiftool') -> dict:
+    try:
+        with _get_conn() as conn:
+            rows = conn.execute(
+                "SELECT status, COUNT(*) AS count FROM asset_processing_state WHERE processor=? GROUP BY status",
+                (processor,),
+            ).fetchall()
+    except sqlite3.OperationalError:
+        rows = []
+    counts = {row['status']: row['count'] for row in rows}
+    total = sum(counts.values())
+    return {
+        'processor': processor,
+        'total': total,
+        'pending': counts.get('pending', 0),
+        'running': counts.get('running', 0),
+        'ok': counts.get('ok', 0),
+        'error': counts.get('error', 0),
+        'missing': counts.get('missing', 0),
+        'stale': counts.get('stale', 0),
+    }
+
+
+def mark_processing_started(state_id: Optional[int]) -> None:
+    if not state_id:
+        return
+    with _get_conn() as conn:
+        conn.execute(
+            """UPDATE asset_processing_state
+               SET status='running',
+                   attempts=COALESCE(attempts, 0) + 1,
+                   last_error=NULL,
+                   started_at=CURRENT_TIMESTAMP,
+                   updated_at=CURRENT_TIMESTAMP
+               WHERE id=?""",
+            (state_id,),
+        )
+
+
 def save_asset_metadata(asset_id: int, path: str, extractor: str, raw: dict,
                         extractor_version: str = '1', mtime: Optional[float] = None,
                         file_id: Optional[int] = None, status: str = 'ok') -> None:
@@ -376,30 +605,34 @@ def save_asset_metadata(asset_id: int, path: str, extractor: str, raw: dict,
 
 
 def list_destination_assets_for_enrichment(limit: int = 1000) -> list[dict]:
-    """Return destination assets ordered by items that still need ExifTool first."""
+    """Return destination assets that still need ExifTool processing."""
+    ensure_processing_coverage('exiftool')
     with _get_conn() as conn:
         rows = conn.execute(
             """SELECT
                    ai.path AS path,
                    ai.file_id AS file_id,
+                   ps.id AS processing_state_id,
+                   ps.status AS processing_status,
+                   ps.attempts AS processing_attempts,
                    a.id AS asset_id,
                    a.media_type AS media_type,
                    a.extension AS extension,
                    a.date_taken AS date_taken,
                    a.width AS width,
                    a.height AS height,
-                   a.duration AS duration,
-                   me.id AS exiftool_row_id
-               FROM asset_instances ai
+                   a.duration AS duration
+               FROM asset_processing_state ps
+               JOIN asset_instances ai
+                    ON ai.asset_id = ps.asset_id
+                   AND ai.path = ps.path
                JOIN assets a ON a.id = ai.asset_id
-               LEFT JOIN metadata_extractions me
-                    ON me.asset_id = a.id
-                   AND me.path = ai.path
-                   AND me.extractor = 'exiftool'
-                   AND me.status = 'ok'
                WHERE ai.role = 'destination'
+                 AND ps.processor = 'exiftool'
+                 AND ps.status IN ('pending', 'error', 'stale')
                ORDER BY
-                   CASE WHEN me.id IS NULL THEN 0 ELSE 1 END,
+                   CASE ps.status WHEN 'pending' THEN 0 WHEN 'stale' THEN 1 ELSE 2 END,
+                   ps.updated_at,
                    ai.id DESC
                LIMIT ?""",
             (limit,),
@@ -440,6 +673,9 @@ def apply_asset_metadata_enrichment(asset_id: int, path: str, extractor: str,
             (asset_id, path),
         ).fetchone()
         resolved_file_id = file_id if file_id is not None else (instance['file_id'] if instance else None)
+        source_mtime, source_size = _path_stats(path)
+        if mtime is not None:
+            source_mtime = mtime
         save_metadata_extraction_conn(
             conn,
             file_id=resolved_file_id,
@@ -450,6 +686,17 @@ def apply_asset_metadata_enrichment(asset_id: int, path: str, extractor: str,
             mtime=mtime,
             status=status,
             raw=raw,
+        )
+        _finish_processing_state_conn(
+            conn,
+            asset_id=asset_id,
+            path=path,
+            processor=extractor,
+            status=status,
+            processor_version=extractor_version,
+            source_mtime=source_mtime,
+            source_size=source_size,
+            last_error=_state_error(raw),
         )
         if status == 'ok':
             conn.execute(
@@ -1010,6 +1257,17 @@ def save_asset_instance(asset_id: int, path: str, role: str = 'origin',
             "UPDATE metadata_extractions SET asset_id = ? WHERE path = ? AND asset_id IS NULL",
             (asset_id, path),
         )
+        if role == 'destination':
+            mtime, size = _path_stats(path)
+            _ensure_processing_state_conn(
+                conn,
+                asset_id=asset_id,
+                instance_id=int(row['id']),
+                path=path,
+                processor='exiftool',
+                source_mtime=mtime,
+                source_size=size,
+            )
         return int(row['id'])
 
 
@@ -1038,15 +1296,21 @@ def list_gallery_assets(limit: int = 80) -> list[dict]:
                             'unknown'
                           ) AS device_type,
                           MAX(COALESCE(json_extract(raw_json, '$.camera_make'), '')) AS camera_make,
-                          COALESCE(
-                            NULLIF(MAX(TRIM(COALESCE(json_extract(raw_json, '$.camera_make'), '') || ' ' ||
-                                            COALESCE(json_extract(raw_json, '$.camera_model'), ''))), ''),
-                            COALESCE(
-                              MAX(NULLIF(json_extract(raw_json, '$.device_name'), 'Desconhecido')),
-                              MAX(json_extract(raw_json, '$.device_name')),
-                              ''
-                            )
-                          ) AS camera_model
+                          MAX(COALESCE(json_extract(raw_json, '$.camera_model'), '')) AS camera_model,
+                          MAX(COALESCE(json_extract(raw_json, '$.lens_model'), '')) AS lens_model,
+                          MAX(COALESCE(json_extract(raw_json, '$.software'), '')) AS software,
+                          MAX(json_extract(raw_json, '$.gps_latitude')) AS gps_latitude,
+                          MAX(json_extract(raw_json, '$.gps_longitude')) AS gps_longitude,
+                          MAX(COALESCE(json_extract(raw_json, '$.exiftool.file_type'), '')) AS file_type,
+                          MAX(COALESCE(json_extract(raw_json, '$.exiftool.mime_type'), '')) AS mime_type,
+                          MAX(COALESCE(json_extract(raw_json, '$.exiftool.codec'), '')) AS codec,
+                          MAX(COALESCE(json_extract(raw_json, '$.exiftool.bitrate'), '')) AS bitrate,
+                          MAX(json_extract(raw_json, '$.exiftool.frame_rate')) AS frame_rate,
+                          MAX(COALESCE(json_extract(raw_json, '$.iso'), json_extract(raw_json, '$.raw_exiftool.ISO'))) AS iso,
+                          MAX(COALESCE(json_extract(raw_json, '$.aperture'), json_extract(raw_json, '$.raw_exiftool.FNumber'))) AS aperture,
+                          MAX(COALESCE(json_extract(raw_json, '$.shutter_speed'), json_extract(raw_json, '$.raw_exiftool.ExposureTime'))) AS shutter_speed,
+                          MAX(COALESCE(json_extract(raw_json, '$.focal_length'), json_extract(raw_json, '$.raw_exiftool.FocalLength'))) AS focal_length,
+                          MAX(CASE WHEN extractor = 'exiftool' AND status = 'ok' THEN extractor_version ELSE '' END) AS exiftool_version
                    FROM metadata_extractions
                    GROUP BY asset_id
                )
@@ -1073,7 +1337,21 @@ def list_gallery_assets(limit: int = 80) -> list[dict]:
                      ELSE 'unknown'
                    END AS device_type,
                    COALESCE(am.camera_make, '') AS camera_make,
-                   COALESCE(am.camera_model, '') AS camera_model
+                   COALESCE(am.camera_model, '') AS camera_model,
+                   COALESCE(am.lens_model, '') AS lens_model,
+                   COALESCE(am.software, '') AS software,
+                   COALESCE(am.gps_latitude, '') AS gps_latitude,
+                   COALESCE(am.gps_longitude, '') AS gps_longitude,
+                   COALESCE(am.file_type, '') AS file_type,
+                   COALESCE(am.mime_type, '') AS mime_type,
+                   COALESCE(am.codec, '') AS codec,
+                   COALESCE(am.bitrate, '') AS bitrate,
+                   COALESCE(am.frame_rate, '') AS frame_rate,
+                   COALESCE(am.iso, '') AS iso,
+                   COALESCE(am.aperture, '') AS aperture,
+                   COALESCE(am.shutter_speed, '') AS shutter_speed,
+                   COALESCE(am.focal_length, '') AS focal_length,
+                   COALESCE(am.exiftool_version, '') AS exiftool_version
                FROM asset_instances ai
                JOIN assets a ON a.id = ai.asset_id
                LEFT JOIN asset_meta am ON am.asset_id = a.id
@@ -1237,8 +1515,18 @@ def gallery_breakdowns(limit: int = 8) -> dict:
             """WITH asset_meta AS (
                    SELECT asset_id,
                           COALESCE(
-                            NULLIF(MAX(TRIM(COALESCE(json_extract(raw_json, '$.camera_make'), '') || ' ' ||
-                                            COALESCE(json_extract(raw_json, '$.camera_model'), ''))), ''),
+                            NULLIF(MAX(TRIM(
+                              CASE
+                                WHEN lower(COALESCE(json_extract(raw_json, '$.camera_make'), '')) LIKE '%dji%' THEN 'DJI'
+                                WHEN upper(COALESCE(json_extract(raw_json, '$.camera_model'), '')) LIKE 'FC%' THEN 'DJI'
+                                ELSE COALESCE(json_extract(raw_json, '$.camera_make'), '')
+                              END || ' ' ||
+                              CASE
+                                WHEN upper(COALESCE(json_extract(raw_json, '$.camera_model'), '')) LIKE 'DJI %'
+                                  THEN substr(COALESCE(json_extract(raw_json, '$.camera_model'), ''), 5)
+                                ELSE COALESCE(json_extract(raw_json, '$.camera_model'), '')
+                              END
+                            )), ''),
                             COALESCE(
                               MAX(NULLIF(json_extract(raw_json, '$.device_name'), 'Desconhecido')),
                               MAX(json_extract(raw_json, '$.device_name')),
