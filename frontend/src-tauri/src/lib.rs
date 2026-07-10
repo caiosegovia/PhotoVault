@@ -1,6 +1,6 @@
 use serde_json::Value;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -25,39 +25,44 @@ fn resource_path(app: &tauri::AppHandle, name: &str) -> Option<PathBuf> {
   let mut candidates = Vec::new();
   if let Ok(resource_dir) = app.path().resource_dir() {
     candidates.push(resource_dir.join(name));
+    candidates.push(resource_dir.join("resources").join(name));
   }
   if let Ok(exe) = std::env::current_exe() {
     if let Some(dir) = exe.parent() {
       candidates.push(dir.join(name));
+      candidates.push(dir.join("resources").join(name));
     }
   }
   candidates.into_iter().find(|path| path.exists())
 }
 
-fn bridge_command(app: &tauri::AppHandle) -> (PathBuf, Vec<PathBuf>, PathBuf) {
+fn bridge_command(app: &tauri::AppHandle) -> (PathBuf, Vec<PathBuf>, Option<PathBuf>) {
   if let Some(sidecar) = resource_path(app, "photovault-bridge.exe") {
-    return (sidecar, Vec::new(), std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf)).unwrap_or_else(repo_root));
+    return (sidecar, Vec::new(), None);
   }
   let root = repo_root();
-  (python_path(), vec![root.join("bridge.py")], root)
+  (python_path(), vec![root.join("bridge.py")], Some(root))
 }
 
 #[tauri::command]
 async fn bridge(app: tauri::AppHandle, command: String, payload: Value) -> Result<Value, String> {
   tauri::async_runtime::spawn_blocking(move || {
     let (program, prefix_args, working_dir) = bridge_command(&app);
+    let program_display = program.display().to_string();
     let mut command_builder = Command::new(program);
     for arg in prefix_args {
       command_builder.arg(arg);
     }
     command_builder
       .arg(command)
-      .current_dir(&working_dir)
       .env("PYTHONUTF8", "1")
       .env("PYTHONIOENCODING", "utf-8")
       .stdin(Stdio::piped())
       .stdout(Stdio::piped())
       .stderr(Stdio::piped());
+    if let Some(dir) = working_dir {
+      command_builder.current_dir(dir);
+    }
     if let Some(ffmpeg) = resource_path(&app, "ffmpeg.exe") {
       command_builder.env("PHOTOVAULT_FFMPEG", ffmpeg);
     }
@@ -72,7 +77,7 @@ async fn bridge(app: tauri::AppHandle, command: String, payload: Value) -> Resul
 
     let mut child = command_builder
       .spawn()
-      .map_err(|err| format!("Falha ao iniciar bridge Python: {err}"))?;
+      .map_err(|err| format!("Falha ao iniciar bridge Python em {program_display}: {err}"))?;
 
     if let Some(stdin) = child.stdin.as_mut() {
       let body = serde_json::to_vec(&payload).map_err(|err| err.to_string())?;
