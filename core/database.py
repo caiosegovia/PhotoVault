@@ -255,6 +255,19 @@ def init_db() -> None:
                 body TEXT NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
+            CREATE TABLE IF NOT EXISTS background_jobs (
+                id INTEGER PRIMARY KEY,
+                kind TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'queued',
+                entity_type TEXT,
+                entity_id INTEGER,
+                payload TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                started_at TIMESTAMP,
+                completed_at TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                error TEXT
+            );
             CREATE INDEX IF NOT EXISTS idx_hash ON files(hash_sha256);
             CREATE INDEX IF NOT EXISTS idx_phash ON files(hash_phash);
             CREATE INDEX IF NOT EXISTS idx_path ON files(path);
@@ -275,6 +288,7 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_processing_processor_status ON asset_processing_state(processor, status);
             CREATE INDEX IF NOT EXISTS idx_processing_asset ON asset_processing_state(asset_id);
             CREATE INDEX IF NOT EXISTS idx_catalog_notes_asset ON catalog_notes(asset_id);
+            CREATE INDEX IF NOT EXISTS idx_background_jobs_status ON background_jobs(kind, status);
         """)
         try:
             conn.execute("""
@@ -327,6 +341,7 @@ def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS idx_processing_processor_status ON asset_processing_state(processor, status)",
             "CREATE INDEX IF NOT EXISTS idx_processing_asset ON asset_processing_state(asset_id)",
             "CREATE INDEX IF NOT EXISTS idx_catalog_notes_asset ON catalog_notes(asset_id)",
+            "CREATE INDEX IF NOT EXISTS idx_background_jobs_status ON background_jobs(kind, status)",
         ]:
             try:
                 conn.execute(idx_sql)
@@ -1287,29 +1302,31 @@ def list_gallery_assets(limit: int = 80) -> list[dict]:
             """WITH asset_meta AS (
                    SELECT asset_id,
                           COALESCE(
+                            MAX(CASE WHEN extractor='exiftool' AND status='ok' THEN NULLIF(json_extract(raw_json, '$.device_name'), 'Desconhecido') END),
                             MAX(NULLIF(json_extract(raw_json, '$.device_name'), 'Desconhecido')),
                             MAX(json_extract(raw_json, '$.device_name')),
                             'Desconhecido'
                           ) AS device_name,
                           COALESCE(
+                            MAX(CASE WHEN extractor='exiftool' AND status='ok' THEN NULLIF(NULLIF(json_extract(raw_json, '$.device_type'), ''), 'unknown') END),
                             MAX(NULLIF(NULLIF(json_extract(raw_json, '$.device_type'), ''), 'unknown')),
                             'unknown'
                           ) AS device_type,
-                          MAX(COALESCE(json_extract(raw_json, '$.camera_make'), '')) AS camera_make,
-                          MAX(COALESCE(json_extract(raw_json, '$.camera_model'), '')) AS camera_model,
-                          MAX(COALESCE(json_extract(raw_json, '$.lens_model'), '')) AS lens_model,
-                          MAX(COALESCE(json_extract(raw_json, '$.software'), '')) AS software,
-                          MAX(json_extract(raw_json, '$.gps_latitude')) AS gps_latitude,
-                          MAX(json_extract(raw_json, '$.gps_longitude')) AS gps_longitude,
-                          MAX(COALESCE(json_extract(raw_json, '$.exiftool.file_type'), '')) AS file_type,
-                          MAX(COALESCE(json_extract(raw_json, '$.exiftool.mime_type'), '')) AS mime_type,
-                          MAX(COALESCE(json_extract(raw_json, '$.exiftool.codec'), '')) AS codec,
-                          MAX(COALESCE(json_extract(raw_json, '$.exiftool.bitrate'), '')) AS bitrate,
-                          MAX(json_extract(raw_json, '$.exiftool.frame_rate')) AS frame_rate,
-                          MAX(COALESCE(json_extract(raw_json, '$.iso'), json_extract(raw_json, '$.raw_exiftool.ISO'))) AS iso,
-                          MAX(COALESCE(json_extract(raw_json, '$.aperture'), json_extract(raw_json, '$.raw_exiftool.FNumber'))) AS aperture,
-                          MAX(COALESCE(json_extract(raw_json, '$.shutter_speed'), json_extract(raw_json, '$.raw_exiftool.ExposureTime'))) AS shutter_speed,
-                          MAX(COALESCE(json_extract(raw_json, '$.focal_length'), json_extract(raw_json, '$.raw_exiftool.FocalLength'))) AS focal_length,
+                          COALESCE(MAX(CASE WHEN extractor='exiftool' AND status='ok' THEN NULLIF(json_extract(raw_json, '$.camera_make'), '') END), MAX(COALESCE(json_extract(raw_json, '$.camera_make'), ''))) AS camera_make,
+                          COALESCE(MAX(CASE WHEN extractor='exiftool' AND status='ok' THEN NULLIF(json_extract(raw_json, '$.camera_model'), '') END), MAX(COALESCE(json_extract(raw_json, '$.camera_model'), ''))) AS camera_model,
+                          COALESCE(MAX(CASE WHEN extractor='exiftool' AND status='ok' THEN NULLIF(json_extract(raw_json, '$.lens_model'), '') END), MAX(COALESCE(json_extract(raw_json, '$.lens_model'), ''))) AS lens_model,
+                          COALESCE(MAX(CASE WHEN extractor='exiftool' AND status='ok' THEN NULLIF(json_extract(raw_json, '$.software'), '') END), MAX(COALESCE(json_extract(raw_json, '$.software'), ''))) AS software,
+                          COALESCE(MAX(CASE WHEN extractor='exiftool' AND status='ok' THEN json_extract(raw_json, '$.gps_latitude') END), MAX(json_extract(raw_json, '$.gps_latitude'))) AS gps_latitude,
+                          COALESCE(MAX(CASE WHEN extractor='exiftool' AND status='ok' THEN json_extract(raw_json, '$.gps_longitude') END), MAX(json_extract(raw_json, '$.gps_longitude'))) AS gps_longitude,
+                          COALESCE(MAX(CASE WHEN extractor='exiftool' AND status='ok' THEN NULLIF(json_extract(raw_json, '$.exiftool.file_type'), '') END), MAX(COALESCE(json_extract(raw_json, '$.exiftool.file_type'), ''))) AS file_type,
+                          COALESCE(MAX(CASE WHEN extractor='exiftool' AND status='ok' THEN NULLIF(json_extract(raw_json, '$.exiftool.mime_type'), '') END), MAX(COALESCE(json_extract(raw_json, '$.exiftool.mime_type'), ''))) AS mime_type,
+                          COALESCE(MAX(CASE WHEN extractor='exiftool' AND status='ok' THEN NULLIF(json_extract(raw_json, '$.exiftool.codec'), '') END), MAX(COALESCE(json_extract(raw_json, '$.exiftool.codec'), ''))) AS codec,
+                          COALESCE(MAX(CASE WHEN extractor='exiftool' AND status='ok' THEN NULLIF(json_extract(raw_json, '$.exiftool.bitrate'), '') END), MAX(COALESCE(json_extract(raw_json, '$.exiftool.bitrate'), ''))) AS bitrate,
+                          COALESCE(MAX(CASE WHEN extractor='exiftool' AND status='ok' THEN json_extract(raw_json, '$.exiftool.frame_rate') END), MAX(json_extract(raw_json, '$.exiftool.frame_rate'))) AS frame_rate,
+                          COALESCE(MAX(CASE WHEN extractor='exiftool' AND status='ok' THEN COALESCE(json_extract(raw_json, '$.iso'), json_extract(raw_json, '$.raw_exiftool.ISO')) END), MAX(COALESCE(json_extract(raw_json, '$.iso'), json_extract(raw_json, '$.raw_exiftool.ISO')))) AS iso,
+                          COALESCE(MAX(CASE WHEN extractor='exiftool' AND status='ok' THEN COALESCE(json_extract(raw_json, '$.aperture'), json_extract(raw_json, '$.raw_exiftool.FNumber')) END), MAX(COALESCE(json_extract(raw_json, '$.aperture'), json_extract(raw_json, '$.raw_exiftool.FNumber')))) AS aperture,
+                          COALESCE(MAX(CASE WHEN extractor='exiftool' AND status='ok' THEN COALESCE(json_extract(raw_json, '$.shutter_speed'), json_extract(raw_json, '$.raw_exiftool.ExposureTime')) END), MAX(COALESCE(json_extract(raw_json, '$.shutter_speed'), json_extract(raw_json, '$.raw_exiftool.ExposureTime')))) AS shutter_speed,
+                          COALESCE(MAX(CASE WHEN extractor='exiftool' AND status='ok' THEN COALESCE(json_extract(raw_json, '$.focal_length'), json_extract(raw_json, '$.raw_exiftool.FocalLength')) END), MAX(COALESCE(json_extract(raw_json, '$.focal_length'), json_extract(raw_json, '$.raw_exiftool.FocalLength')))) AS focal_length,
                           MAX(CASE WHEN extractor = 'exiftool' AND status = 'ok' THEN extractor_version ELSE '' END) AS exiftool_version
                    FROM metadata_extractions
                    GROUP BY asset_id
@@ -1364,6 +1381,251 @@ def list_gallery_assets(limit: int = 80) -> list[dict]:
             (limit,),
         ).fetchall()
     return [dict(row) for row in rows]
+
+
+def _gallery_asset_select(where_sql: str = "", join_sql: str = "", order_sql: str = "", limit: int = 80,
+                          params: Optional[list] = None) -> list[dict]:
+    params = params or []
+    with _get_conn() as conn:
+        rows = conn.execute(
+            f"""WITH asset_meta AS (
+                   SELECT asset_id,
+                          COALESCE(MAX(CASE WHEN extractor='exiftool' AND status='ok' THEN NULLIF(json_extract(raw_json, '$.device_name'), 'Desconhecido') END),
+                                   MAX(NULLIF(json_extract(raw_json, '$.device_name'), 'Desconhecido')),
+                                   MAX(json_extract(raw_json, '$.device_name')), 'Desconhecido') AS device_name,
+                          COALESCE(MAX(CASE WHEN extractor='exiftool' AND status='ok' THEN NULLIF(NULLIF(json_extract(raw_json, '$.device_type'), ''), 'unknown') END),
+                                   MAX(NULLIF(NULLIF(json_extract(raw_json, '$.device_type'), ''), 'unknown')), 'unknown') AS device_type,
+                          COALESCE(MAX(CASE WHEN extractor='exiftool' AND status='ok' THEN NULLIF(json_extract(raw_json, '$.camera_make'), '') END), MAX(COALESCE(json_extract(raw_json, '$.camera_make'), ''))) AS camera_make,
+                          COALESCE(MAX(CASE WHEN extractor='exiftool' AND status='ok' THEN NULLIF(json_extract(raw_json, '$.camera_model'), '') END), MAX(COALESCE(json_extract(raw_json, '$.camera_model'), ''))) AS camera_model,
+                          COALESCE(MAX(CASE WHEN extractor='exiftool' AND status='ok' THEN NULLIF(json_extract(raw_json, '$.lens_model'), '') END), MAX(COALESCE(json_extract(raw_json, '$.lens_model'), ''))) AS lens_model,
+                          COALESCE(MAX(CASE WHEN extractor='exiftool' AND status='ok' THEN NULLIF(json_extract(raw_json, '$.software'), '') END), MAX(COALESCE(json_extract(raw_json, '$.software'), ''))) AS software,
+                          COALESCE(MAX(CASE WHEN extractor='exiftool' AND status='ok' THEN json_extract(raw_json, '$.gps_latitude') END), MAX(json_extract(raw_json, '$.gps_latitude'))) AS gps_latitude,
+                          COALESCE(MAX(CASE WHEN extractor='exiftool' AND status='ok' THEN json_extract(raw_json, '$.gps_longitude') END), MAX(json_extract(raw_json, '$.gps_longitude'))) AS gps_longitude,
+                          COALESCE(MAX(CASE WHEN extractor='exiftool' AND status='ok' THEN NULLIF(json_extract(raw_json, '$.exiftool.file_type'), '') END), MAX(COALESCE(json_extract(raw_json, '$.exiftool.file_type'), ''))) AS file_type,
+                          COALESCE(MAX(CASE WHEN extractor='exiftool' AND status='ok' THEN NULLIF(json_extract(raw_json, '$.exiftool.mime_type'), '') END), MAX(COALESCE(json_extract(raw_json, '$.exiftool.mime_type'), ''))) AS mime_type,
+                          COALESCE(MAX(CASE WHEN extractor='exiftool' AND status='ok' THEN NULLIF(json_extract(raw_json, '$.exiftool.codec'), '') END), MAX(COALESCE(json_extract(raw_json, '$.exiftool.codec'), ''))) AS codec,
+                          COALESCE(MAX(CASE WHEN extractor='exiftool' AND status='ok' THEN NULLIF(json_extract(raw_json, '$.exiftool.bitrate'), '') END), MAX(COALESCE(json_extract(raw_json, '$.exiftool.bitrate'), ''))) AS bitrate,
+                          COALESCE(MAX(CASE WHEN extractor='exiftool' AND status='ok' THEN json_extract(raw_json, '$.exiftool.frame_rate') END), MAX(json_extract(raw_json, '$.exiftool.frame_rate'))) AS frame_rate,
+                          COALESCE(MAX(CASE WHEN extractor='exiftool' AND status='ok' THEN COALESCE(json_extract(raw_json, '$.iso'), json_extract(raw_json, '$.raw_exiftool.ISO')) END), MAX(COALESCE(json_extract(raw_json, '$.iso'), json_extract(raw_json, '$.raw_exiftool.ISO')))) AS iso,
+                          COALESCE(MAX(CASE WHEN extractor='exiftool' AND status='ok' THEN COALESCE(json_extract(raw_json, '$.aperture'), json_extract(raw_json, '$.raw_exiftool.FNumber')) END), MAX(COALESCE(json_extract(raw_json, '$.aperture'), json_extract(raw_json, '$.raw_exiftool.FNumber')))) AS aperture,
+                          COALESCE(MAX(CASE WHEN extractor='exiftool' AND status='ok' THEN COALESCE(json_extract(raw_json, '$.shutter_speed'), json_extract(raw_json, '$.raw_exiftool.ExposureTime')) END), MAX(COALESCE(json_extract(raw_json, '$.shutter_speed'), json_extract(raw_json, '$.raw_exiftool.ExposureTime')))) AS shutter_speed,
+                          COALESCE(MAX(CASE WHEN extractor='exiftool' AND status='ok' THEN COALESCE(json_extract(raw_json, '$.focal_length'), json_extract(raw_json, '$.raw_exiftool.FocalLength')) END), MAX(COALESCE(json_extract(raw_json, '$.focal_length'), json_extract(raw_json, '$.raw_exiftool.FocalLength')))) AS focal_length,
+                          MAX(CASE WHEN extractor = 'exiftool' AND status = 'ok' THEN extractor_version ELSE '' END) AS exiftool_version
+                   FROM metadata_extractions
+                   GROUP BY asset_id
+               ),
+               tag_meta AS (
+                   SELECT at.asset_id,
+                          GROUP_CONCAT(ct.label, ', ') AS tags
+                   FROM asset_tags at
+                   JOIN catalog_tags ct ON ct.id = at.tag_id
+                   GROUP BY at.asset_id
+               ),
+               note_meta AS (
+                   SELECT asset_id,
+                          COUNT(*) AS note_count,
+                          MAX(body) AS latest_note
+                   FROM catalog_notes
+                   GROUP BY asset_id
+               )
+               SELECT
+                   ai.id AS instance_id,
+                   ai.path AS path,
+                   ai.quality_score AS quality_score,
+                   a.id AS asset_id,
+                   a.sha256 AS sha256,
+                   a.size AS size,
+                   a.media_type AS media_type,
+                   a.extension AS extension,
+                   a.date_taken AS date_taken,
+                   a.width AS width,
+                   a.height AS height,
+                   a.duration AS duration,
+                   COALESCE(am.device_name, 'Desconhecido') AS device_name,
+                   CASE
+                     WHEN COALESCE(am.device_type, 'unknown') <> 'unknown' THEN am.device_type
+                     WHEN lower(COALESCE(am.device_name, '')) LIKE '%dji%' OR lower(COALESCE(am.device_name, '')) LIKE '%drone%' THEN 'drone'
+                     WHEN lower(COALESCE(am.device_name, '')) LIKE '%iphone%' OR lower(COALESCE(am.device_name, '')) LIKE '%samsung%' OR lower(COALESCE(am.device_name, '')) LIKE '%sm-%' THEN 'phone'
+                     WHEN lower(COALESCE(am.device_name, '')) LIKE '%adobe%' OR lower(COALESCE(am.device_name, '')) LIKE '%lightroom%' THEN 'app'
+                     WHEN lower(COALESCE(am.device_name, '')) LIKE '%canon%' OR lower(COALESCE(am.device_name, '')) LIKE '%nikon%' OR lower(COALESCE(am.device_name, '')) LIKE '%sony%' OR lower(COALESCE(am.device_name, '')) LIKE '%fujifilm%' OR lower(COALESCE(am.device_name, '')) LIKE '%gopro%' THEN 'camera'
+                     ELSE 'unknown'
+                   END AS device_type,
+                   COALESCE(am.camera_make, '') AS camera_make,
+                   COALESCE(am.camera_model, '') AS camera_model,
+                   COALESCE(am.lens_model, '') AS lens_model,
+                   COALESCE(am.software, '') AS software,
+                   COALESCE(am.gps_latitude, '') AS gps_latitude,
+                   COALESCE(am.gps_longitude, '') AS gps_longitude,
+                   COALESCE(am.file_type, '') AS file_type,
+                   COALESCE(am.mime_type, '') AS mime_type,
+                   COALESCE(am.codec, '') AS codec,
+                   COALESCE(am.bitrate, '') AS bitrate,
+                   COALESCE(am.frame_rate, '') AS frame_rate,
+                   COALESCE(am.iso, '') AS iso,
+                   COALESCE(am.aperture, '') AS aperture,
+                   COALESCE(am.shutter_speed, '') AS shutter_speed,
+                   COALESCE(am.focal_length, '') AS focal_length,
+                   COALESCE(am.exiftool_version, '') AS exiftool_version,
+                   COALESCE(tm.tags, '') AS tags,
+                   COALESCE(nm.note_count, 0) AS note_count,
+                   COALESCE(nm.latest_note, '') AS latest_note
+               FROM asset_instances ai
+               JOIN assets a ON a.id = ai.asset_id
+               LEFT JOIN asset_meta am ON am.asset_id = a.id
+               LEFT JOIN tag_meta tm ON tm.asset_id = a.id
+               LEFT JOIN note_meta nm ON nm.asset_id = a.id
+               {join_sql}
+               WHERE ai.role = 'destination' {where_sql}
+               {order_sql or "ORDER BY CASE WHEN a.date_taken IS NULL THEN 1 ELSE 0 END, a.date_taken DESC, ai.id DESC"}
+               LIMIT ?""",
+            [*params, limit],
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def _fts_query(value: str) -> str:
+    tokens = [token.strip().replace('"', '') for token in value.split() if token.strip()]
+    return " ".join(f'"{token}"*' for token in tokens)
+
+
+def search_gallery_assets(query: str, limit: int = 240) -> list[dict]:
+    """Search destination gallery assets through FTS5 with LIKE fallback."""
+    term = (query or '').strip()
+    if not term:
+        return list_gallery_assets(limit)
+    try:
+        return _gallery_asset_select(
+            join_sql="JOIN catalog_search ON catalog_search.path = ai.path",
+            where_sql="AND catalog_search MATCH ?",
+            order_sql="ORDER BY bm25(catalog_search), CASE WHEN a.date_taken IS NULL THEN 1 ELSE 0 END, a.date_taken DESC",
+            params=[_fts_query(term)],
+            limit=limit,
+        )
+    except sqlite3.OperationalError:
+        pattern = f"%{term.lower()}%"
+        return _gallery_asset_select(
+            where_sql="""AND (
+                lower(ai.path) LIKE ?
+                OR lower(COALESCE(a.extension, '')) LIKE ?
+                OR lower(COALESCE(a.media_type, '')) LIKE ?
+            )""",
+            params=[pattern, pattern, pattern],
+            limit=limit,
+        )
+
+
+def save_asset_tags(asset_id: int, labels: list[str], source: str = 'user') -> list[str]:
+    cleaned = sorted({label.strip() for label in labels if label and label.strip()})
+    with _get_conn() as conn:
+        conn.execute("DELETE FROM asset_tags WHERE asset_id=? AND source=?", (asset_id, source))
+        for label in cleaned:
+            cur = conn.execute(
+                "INSERT INTO catalog_tags(label, source) VALUES (?, ?) ON CONFLICT(label) DO UPDATE SET label=excluded.label",
+                (label, source),
+            )
+            row = conn.execute("SELECT id FROM catalog_tags WHERE label=?", (label,)).fetchone()
+            tag_id = int(row['id'] if row else cur.lastrowid)
+            conn.execute(
+                "INSERT OR REPLACE INTO asset_tags(asset_id, tag_id, confidence, source) VALUES (?, ?, ?, ?)",
+                (asset_id, tag_id, 1.0, source),
+            )
+        rows = conn.execute("SELECT path, media_type, extension FROM asset_instances ai JOIN assets a ON a.id=ai.asset_id WHERE ai.asset_id=? AND ai.role='destination'", (asset_id,)).fetchall()
+        for row in rows:
+            refresh_catalog_search_conn(conn, row['path'], row['media_type'], row['extension'], tags=" ".join(cleaned))
+    return cleaned
+
+
+def add_catalog_note(asset_id: int, body: str, note_type: str = 'note', source: str = 'user') -> int:
+    text = (body or '').strip()
+    if not text:
+        raise ValueError('Nota obrigatoria')
+    with _get_conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO catalog_notes(asset_id, note_type, source, body) VALUES (?, ?, ?, ?)",
+            (asset_id, note_type, source, text),
+        )
+        return int(cur.lastrowid)
+
+
+def get_asset_catalog(asset_id: int) -> dict:
+    with _get_conn() as conn:
+        tags = conn.execute(
+            """SELECT ct.label FROM asset_tags at
+               JOIN catalog_tags ct ON ct.id = at.tag_id
+               WHERE at.asset_id=?
+               ORDER BY ct.label""",
+            (asset_id,),
+        ).fetchall()
+        notes = conn.execute(
+            "SELECT id, note_type, source, body, created_at FROM catalog_notes WHERE asset_id=? ORDER BY created_at DESC, id DESC LIMIT 20",
+            (asset_id,),
+        ).fetchall()
+    return {'assetId': asset_id, 'tags': [row['label'] for row in tags], 'notes': [dict(row) for row in notes]}
+
+
+def gallery_health() -> dict:
+    with _get_conn() as conn:
+        row = conn.execute(
+            """SELECT
+                   COUNT(*) AS total,
+                   SUM(CASE WHEN a.date_taken IS NULL THEN 1 ELSE 0 END) AS without_date,
+                   SUM(CASE WHEN COALESCE(a.media_type, '') = 'video' AND a.size >= ? THEN 1 ELSE 0 END) AS large_videos,
+                   SUM(CASE WHEN ai.path IS NULL OR ai.path = '' THEN 1 ELSE 0 END) AS missing_path
+               FROM asset_instances ai
+               JOIN assets a ON a.id = ai.asset_id
+               WHERE ai.role='destination'""",
+            (50 * 1024 * 1024,),
+        ).fetchone()
+        processing = conn.execute(
+            "SELECT status, COUNT(*) AS count FROM asset_processing_state WHERE processor='exiftool' GROUP BY status",
+        ).fetchall()
+        open_imports = conn.execute(
+            """SELECT COUNT(*) AS count
+               FROM imports
+               WHERE status IN ('created', 'scanning', 'analyzed', 'running', 'failed')""",
+        ).fetchone()
+    processing_counts = {item['status']: item['count'] for item in processing}
+    return {
+        'total': row['total'] or 0,
+        'withoutDate': row['without_date'] or 0,
+        'largeVideos': row['large_videos'] or 0,
+        'missingPath': row['missing_path'] or 0,
+        'metadataPending': sum(processing_counts.get(key, 0) for key in ('pending', 'stale', 'error')),
+        'openImports': open_imports['count'] or 0,
+        'processing': processing_counts,
+    }
+
+
+def resumable_imports(limit: int = 10) -> list[dict]:
+    with _get_conn() as conn:
+        rows = conn.execute(
+            """SELECT i.id, i.name, i.source_path, i.status, i.ingest_plan_id,
+                      COUNT(io.id) AS operations,
+                      SUM(CASE WHEN io.status IN ('planned', 'error', 'running') AND io.action IN ('copy', 'move') THEN 1 ELSE 0 END) AS resumable,
+                      SUM(CASE WHEN io.status = 'done' THEN 1 ELSE 0 END) AS done,
+                      SUM(CASE WHEN io.status = 'error' THEN 1 ELSE 0 END) AS errors
+               FROM imports i
+               JOIN ingest_plans ip ON ip.id = i.ingest_plan_id
+               JOIN ingest_operations io ON io.plan_id = ip.id
+               WHERE i.ingest_plan_id IS NOT NULL
+               GROUP BY i.id
+               HAVING resumable > 0 OR i.status IN ('failed', 'running', 'analyzed')
+               ORDER BY i.created_at DESC
+               LIMIT ?""",
+            (limit,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def job_summary() -> dict:
+    with _get_conn() as conn:
+        rows = conn.execute(
+            "SELECT kind, status, COUNT(*) AS count FROM background_jobs GROUP BY kind, status",
+        ).fetchall()
+    summary: dict[str, dict[str, int]] = {}
+    for row in rows:
+        summary.setdefault(row['kind'], {})[row['status']] = row['count']
+    return summary
 
 
 def gallery_totals() -> dict:

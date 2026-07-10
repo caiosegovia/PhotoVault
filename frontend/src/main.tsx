@@ -27,6 +27,8 @@ import {
   Save,
   Search,
   Sparkles,
+  Tag,
+  Terminal,
   Trash2,
   Video,
 } from "lucide-react";
@@ -47,6 +49,7 @@ import "./styles.css";
 type ImportStatus = "ready" | "done" | "running" | "failed";
 type Decision = "import" | "skip" | "review";
 type View = "cockpit" | "gallery" | "import" | "reviews" | "logs";
+type GridMode = "fill" | "contain" | "compact";
 
 type ImportItem = {
   id: number;
@@ -91,6 +94,7 @@ type GalleryState = {
   };
   processing?: { exiftool?: Record<string, number | string> };
   timings?: Record<string, number>;
+  search?: { query: string; count: number; limit: number };
 };
 
 type DecisionGroup = {
@@ -129,6 +133,50 @@ type ProgressMetrics = {
   slowestFile?: CopyFileMetric;
 };
 type CopyFileMetric = { path: string; bytes: number; seconds: number; mbps: number };
+type DiagnosticItem = {
+  label: string;
+  available: boolean;
+  required: boolean;
+  path: string;
+  version?: string;
+  status: "ok" | "warning" | "error";
+  detail?: string;
+};
+type DiagnosticsState = {
+  status: "ok" | "warning" | "error";
+  summary: string;
+  requiredMissing: number;
+  optionalMissing: number;
+  tools: DiagnosticItem[];
+  paths: DiagnosticItem[];
+  platform?: { system?: string; release?: string; machine?: string };
+};
+type CatalogNote = { id: number; note_type: string; source: string; body: string; created_at: string };
+type AssetCatalog = { assetId: number; tags: string[]; notes: CatalogNote[] };
+type HealthInsight = { title: string; detail: string; action: string };
+type ResumableImport = {
+  id: number;
+  name: string;
+  source_path: string;
+  status: string;
+  ingest_plan_id: number;
+  operations: number;
+  resumable: number;
+  done: number;
+  errors: number;
+};
+type HealthState = {
+  total: number;
+  withoutDate: number;
+  largeVideos: number;
+  missingPath: number;
+  metadataPending: number;
+  openImports: number;
+  processing?: Record<string, number>;
+  resumableImports?: ResumableImport[];
+  jobs?: Record<string, Record<string, number>>;
+  insights?: HealthInsight[];
+};
 type BackendState = {
   vault: Vault;
   imports: ImportItem[];
@@ -136,6 +184,8 @@ type BackendState = {
   gallery: GalleryState;
   disk: Disk;
   progress?: ProgressInfo;
+  diagnostics?: DiagnosticsState;
+  health?: HealthState;
   logPath?: string;
 };
 type LogState = { logPath: string; lines: string[] };
@@ -157,6 +207,26 @@ const EMPTY_GALLERY: GalleryState = {
   capabilities: { ffmpegAvailable: false, exiftoolAvailable: false },
 };
 const EMPTY_IMPORT_INSIGHTS: ImportInsights = { reasonGroups: [], mediaGroups: [], statusGroups: [] };
+const EMPTY_DIAGNOSTICS: DiagnosticsState = {
+  status: "warning",
+  summary: "Diagnostico ainda nao carregado",
+  requiredMissing: 0,
+  optionalMissing: 0,
+  tools: [],
+  paths: [],
+};
+const EMPTY_HEALTH: HealthState = {
+  total: 0,
+  withoutDate: 0,
+  largeVideos: 0,
+  missingPath: 0,
+  metadataPending: 0,
+  openImports: 0,
+  processing: {},
+  resumableImports: [],
+  jobs: {},
+  insights: [],
+};
 const DEFAULT_FILTER: GalleryFilter = {
   media: "all",
   year: "all",
@@ -171,6 +241,33 @@ const DEFAULT_FILTER: GalleryFilter = {
   problem: "all",
 };
 
+function readStoredView(): View {
+  try {
+    const value = window.localStorage.getItem("photovault.activeView") as View | null;
+    return value && ["cockpit", "gallery", "import", "reviews", "logs"].includes(value) ? value : "cockpit";
+  } catch {
+    return "cockpit";
+  }
+}
+
+function readStoredFilter(): GalleryFilter {
+  try {
+    const raw = window.localStorage.getItem("photovault.galleryFilter");
+    return raw ? { ...DEFAULT_FILTER, ...JSON.parse(raw) } : DEFAULT_FILTER;
+  } catch {
+    return DEFAULT_FILTER;
+  }
+}
+
+function readStoredGridMode(): GridMode {
+  try {
+    const value = window.localStorage.getItem("photovault.galleryGridMode") as GridMode | null;
+    return value && ["fill", "contain", "compact"].includes(value) ? value : "contain";
+  } catch {
+    return "contain";
+  }
+}
+
 const PATTERN_PRESETS = [
   { label: "Ano / mes", value: "{year}/{month:02d}" },
   { label: "Ano / mes / tipo", value: "{year}/{month:02d}/{media_type}" },
@@ -180,6 +277,7 @@ const PATTERN_PRESETS = [
 ];
 const CAPACITY_RESERVE_BYTES = 1024 ** 3;
 const GALLERY_ITEM_LIMIT = 50000;
+const GALLERY_PAGE_SIZE = 240;
 
 function formatNumber(value: number) {
   return value.toLocaleString("pt-BR");
@@ -309,6 +407,18 @@ function exiftoolStatusDetail(gallery: GalleryState) {
   return "Instale exiftool.exe no PATH ou configure PHOTOVAULT_EXIFTOOL.";
 }
 
+function diagnosticsStatusLabel(diagnostics: DiagnosticsState) {
+  if (diagnostics.status === "ok") {
+    return diagnostics.optionalMissing ? `Pronto, ${diagnostics.optionalMissing} opcional ausente` : "Ambiente pronto";
+  }
+  return diagnostics.summary || "Revisar ambiente";
+}
+
+function diagnosticValue(item: DiagnosticItem) {
+  if (!item.available) return item.required ? "Ausente" : "Opcional";
+  return item.version ? `OK ${item.version}` : "OK";
+}
+
 async function callBridge<T>(command: string, payload: unknown = {}) {
   return invoke<T>("bridge", { command, payload });
 }
@@ -326,7 +436,7 @@ async function revealNativePath(path: string) {
 }
 
 function App() {
-  const [activeView, setActiveView] = React.useState<View>("cockpit");
+  const [activeView, setActiveView] = React.useState<View>(readStoredView);
   const [imports, setImports] = React.useState<ImportItem[]>([]);
   const [importInsights, setImportInsights] = React.useState<ImportInsights>(EMPTY_IMPORT_INSIGHTS);
   const [gallery, setGallery] = React.useState<GalleryState>(EMPTY_GALLERY);
@@ -344,7 +454,12 @@ function App() {
   const [progressDismissed, setProgressDismissed] = React.useState(false);
   const [logPath, setLogPath] = React.useState("");
   const [logs, setLogs] = React.useState<LogState>({ logPath: "", lines: [] });
-  const [filter, setFilter] = React.useState<GalleryFilter>(DEFAULT_FILTER);
+  const [diagnostics, setDiagnostics] = React.useState<DiagnosticsState>(EMPTY_DIAGNOSTICS);
+  const [health, setHealth] = React.useState<HealthState>(EMPTY_HEALTH);
+  const [catalog, setCatalog] = React.useState<AssetCatalog | null>(null);
+  const [catalogBusy, setCatalogBusy] = React.useState(false);
+  const [filter, setFilter] = React.useState<GalleryFilter>(readStoredFilter);
+  const [gridMode, setGridMode] = React.useState<GridMode>(readStoredGridMode);
   const progressTimerRef = React.useRef<number | null>(null);
   const galleryLoadingRef = React.useRef(false);
 
@@ -356,6 +471,30 @@ function App() {
   }, []);
 
   React.useEffect(() => {
+    try {
+      window.localStorage.setItem("photovault.activeView", activeView);
+    } catch {
+      // Preferences are best-effort only.
+    }
+  }, [activeView]);
+
+  React.useEffect(() => {
+    try {
+      window.localStorage.setItem("photovault.galleryFilter", JSON.stringify(filter));
+    } catch {
+      // Preferences are best-effort only.
+    }
+  }, [filter]);
+
+  React.useEffect(() => {
+    try {
+      window.localStorage.setItem("photovault.galleryGridMode", gridMode);
+    } catch {
+      // Preferences are best-effort only.
+    }
+  }, [gridMode]);
+
+  React.useEffect(() => {
     if (activeView === "logs") refreshLogs();
   }, [activeView]);
 
@@ -365,10 +504,25 @@ function App() {
     }
   }, [activeView, gallery.total, gallery.items.length]);
 
+  React.useEffect(() => {
+    if (activeView !== "gallery") return;
+    const query = filter.query.trim();
+    const timer = window.setTimeout(() => {
+      if (query.length >= 2) searchGallery(query);
+      if (!query && gallery.search?.query) refreshGallery(false);
+    }, 260);
+    return () => window.clearTimeout(timer);
+  }, [activeView, filter.query]);
+
   const filteredItems = React.useMemo(() => {
     return filterGalleryItems(gallery.items, filter);
   }, [gallery.items, filter]);
   const selectedGalleryItem = filteredItems.find((item) => item.id === selectedGalleryId) ?? filteredItems[0] ?? null;
+
+  React.useEffect(() => {
+    if (selectedGalleryItem?.assetId) loadCatalog(selectedGalleryItem.assetId);
+    else setCatalog(null);
+  }, [selectedGalleryItem?.assetId]);
 
   const counts = importInsights.reasonGroups.reduce(
     (acc, group) => {
@@ -407,6 +561,8 @@ function App() {
       setGallery(state.gallery ?? EMPTY_GALLERY);
       setDisk(state.disk);
       setProgress(state.progress ?? null);
+      setDiagnostics(state.diagnostics ?? EMPTY_DIAGNOSTICS);
+      setHealth(state.health ?? EMPTY_HEALTH);
       if (state.progress?.status === "running") setProgressDismissed(false);
       setLogPath(state.logPath ?? state.progress?.logPath ?? "");
       setSelectedImportId(preferredImportId ?? selectedImportId ?? state.imports[0]?.id ?? null);
@@ -436,6 +592,23 @@ function App() {
     }
   }
 
+  async function searchGallery(query: string) {
+    if (galleryLoadingRef.current) return;
+    galleryLoadingRef.current = true;
+    setGalleryBusy(true);
+    try {
+      const result = await callBridge<GalleryState>("search_gallery", { query, limit: GALLERY_ITEM_LIMIT });
+      setGallery(result);
+      setSelectedGalleryId((current) => result.items.some((item) => item.id === current) ? current : result.items[0]?.id ?? null);
+      setMessage(`Busca no catalogo: ${formatNumber(result.items.length)} resultado(s).`);
+    } catch (error) {
+      setMessage(`Erro ao buscar no catalogo: ${String(error)}`);
+    } finally {
+      setGalleryBusy(false);
+      galleryLoadingRef.current = false;
+    }
+  }
+
   async function refreshLogs() {
     try {
       const result = await callBridge<LogState>("logs", { lines: 220 });
@@ -443,6 +616,72 @@ function App() {
       setLogPath(result.logPath || logPath);
     } catch (error) {
       setMessage(`Erro ao ler logs: ${String(error)}`);
+    }
+  }
+
+  async function refreshDiagnostics() {
+    try {
+      const result = await callBridge<DiagnosticsState>("diagnostics");
+      setDiagnostics(result);
+      setMessage(result.status === "ok" ? "Diagnostico de ambiente atualizado." : result.summary);
+    } catch (error) {
+      setMessage(`Erro ao diagnosticar ambiente: ${String(error)}`);
+    }
+  }
+
+  async function refreshHealth() {
+    try {
+      const result = await callBridge<HealthState>("health");
+      setHealth(result);
+      setMessage("Saude da galeria atualizada.");
+    } catch (error) {
+      setMessage(`Erro ao atualizar saude: ${String(error)}`);
+    }
+  }
+
+  async function loadCatalog(assetId: number) {
+    setCatalogBusy(true);
+    try {
+      const result = await callBridge<AssetCatalog>("catalog", { assetId });
+      setCatalog(result);
+    } catch (error) {
+      setMessage(`Erro ao carregar catalogo do item: ${String(error)}`);
+    } finally {
+      setCatalogBusy(false);
+    }
+  }
+
+  async function saveTags(assetId: number, tags: string[]) {
+    setCatalogBusy(true);
+    try {
+      const result = await callBridge<{ catalog: AssetCatalog }>("update_tags", { assetId, tags });
+      setCatalog(result.catalog);
+      setGallery((current) => ({
+        ...current,
+        items: current.items.map((item) => item.assetId === assetId ? { ...item, tags: result.catalog.tags.join(", ") } : item),
+      }));
+      setMessage("Tags salvas.");
+    } catch (error) {
+      setMessage(`Erro ao salvar tags: ${String(error)}`);
+    } finally {
+      setCatalogBusy(false);
+    }
+  }
+
+  async function saveNote(assetId: number, body: string) {
+    setCatalogBusy(true);
+    try {
+      const result = await callBridge<{ catalog: AssetCatalog }>("add_note", { assetId, body });
+      setCatalog(result.catalog);
+      setGallery((current) => ({
+        ...current,
+        items: current.items.map((item) => item.assetId === assetId ? { ...item, noteCount: result.catalog.notes.length, latestNote: result.catalog.notes[0]?.body ?? "" } : item),
+      }));
+      setMessage("Nota adicionada.");
+    } catch (error) {
+      setMessage(`Erro ao salvar nota: ${String(error)}`);
+    } finally {
+      setCatalogBusy(false);
     }
   }
 
@@ -762,10 +1001,14 @@ function App() {
             rawCount={rawCount}
             missingThumbCount={missingThumbCount}
             largeVideoBytes={largeVideoBytes}
+            diagnostics={diagnostics}
+            health={health}
             enrichBusy={enrichBusy}
             onFilter={patchFilter}
             onView={setActiveView}
             onEnrich={enrichMetadata}
+            onDiagnostics={refreshDiagnostics}
+            onHealth={refreshHealth}
           />
         ) : null}
 
@@ -775,12 +1018,16 @@ function App() {
             vault={vault}
             imports={imports}
             filter={filter}
+            gridMode={gridMode}
             items={filteredItems}
             selectedItem={selectedGalleryItem}
+            catalog={catalog}
+            catalogBusy={catalogBusy}
             galleryBusy={galleryBusy}
             thumbsBusy={thumbsBusy}
             enrichBusy={enrichBusy}
             onFilter={patchFilter}
+            onGridMode={setGridMode}
             onClear={() => setFilter(DEFAULT_FILTER)}
             onSelect={setSelectedGalleryId}
             onRefresh={() => refreshGallery(false)}
@@ -788,6 +1035,8 @@ function App() {
             onEnrich={enrichMetadata}
             onOpenPath={openPath}
             onRevealPath={revealPath}
+            onSaveTags={saveTags}
+            onSaveNote={saveNote}
           />
         ) : null}
 
@@ -856,10 +1105,14 @@ function CockpitView({
   rawCount,
   missingThumbCount,
   largeVideoBytes,
+  diagnostics,
+  health,
   enrichBusy,
   onFilter,
   onView,
   onEnrich,
+  onDiagnostics,
+  onHealth,
 }: {
   gallery: GalleryState;
   vault: Vault;
@@ -872,11 +1125,42 @@ function CockpitView({
   rawCount: number;
   missingThumbCount: number;
   largeVideoBytes: number;
+  diagnostics: DiagnosticsState;
+  health: HealthState;
   enrichBusy: boolean;
   onFilter: (filter: Partial<GalleryFilter>) => void;
   onView: (view: View) => void;
   onEnrich: () => void;
+  onDiagnostics: () => void;
+  onHealth: () => void;
 }) {
+  const intelligenceGroups = [
+    {
+      title: "Qualidade do catalogo",
+      detail: "Itens que atrapalham timeline, busca e revisao visual.",
+      items: [
+        { icon: ImageOff, title: "Sem preview", value: formatNumber(missingThumbCount), detail: "Gerar thumbs ou validar midias quebradas", action: "Filtrar", onClick: () => onFilter({ problem: "missing-thumb" }) },
+        { icon: CalendarDays, title: "Sem data", value: formatNumber(gallery.withoutDate), detail: "Arquivos fora da timeline confiavel", action: "Ver", onClick: () => onFilter({ problem: "without-date" }) },
+      ],
+    },
+    {
+      title: "Armazenamento",
+      detail: "Arquivos que mais pesam no vault e merecem curadoria.",
+      items: [
+        { icon: Sparkles, title: "RAW", value: formatNumber(rawCount), detail: "Originais pesados para revisao fina", action: "Abrir", onClick: () => onFilter({ problem: "raw" }) },
+        { icon: Film, title: "Videos grandes", value: formatBytes(largeVideoBytes), detail: "Consumo relevante de espaco", action: "Revisar", onClick: () => onFilter({ problem: "video", size: "large" }) },
+      ],
+    },
+    {
+      title: "Origem e captura",
+      detail: "Sinais para separar camera, celular, drone e apps.",
+      items: [
+        { icon: Camera, title: "Cameras", value: formatNumber(gallery.breakdowns.cameras?.length ?? 0), detail: "Modelos identificados por metadados", action: "Ver", onClick: () => onFilter({ problem: "all" }) },
+        { icon: Gauge, title: "Dispositivos", value: formatNumber(gallery.breakdowns.devices?.length ?? 0), detail: "Classes e modelos detectados", action: "Abrir", onClick: () => onFilter({ problem: "all" }) },
+      ],
+    },
+  ];
+
   return (
     <div className="view-stack">
       <GalleryIdentity vault={vault} gallery={gallery} />
@@ -897,12 +1181,11 @@ function CockpitView({
 
       <section className="cockpit-grid">
         <div className="panel span-2">
-          <SectionTitle eyebrow="Inteligencia da galeria" title="Atalhos de curadoria" />
-          <div className="insight-grid">
-            <InsightCard icon={ImageOff} title="Sem preview" value={formatNumber(missingThumbCount)} detail="Gerar thumbs ou validar midias quebradas" action="Filtrar" onClick={() => onFilter({ problem: "missing-thumb" })} />
-            <InsightCard icon={CalendarDays} title="Sem data" value={formatNumber(gallery.withoutDate)} detail="Arquivos que podem cair fora da timeline" action="Ver" onClick={() => onFilter({ problem: "without-date" })} />
-            <InsightCard icon={Sparkles} title="RAW" value={formatNumber(rawCount)} detail="Originais pesados para curadoria fina" action="Abrir" onClick={() => onFilter({ problem: "raw" })} />
-            <InsightCard icon={Film} title="Videos grandes" value={formatBytes(largeVideoBytes)} detail="Consumo relevante de vault" action="Revisar" onClick={() => onFilter({ problem: "video", size: "large" })} />
+          <SectionTitle eyebrow="Inteligencia da galeria" title="Proximas melhores acoes" />
+          <div className="insight-groups">
+            {intelligenceGroups.map((group) => (
+              <InsightGroup key={group.title} title={group.title} detail={group.detail} items={group.items} />
+            ))}
           </div>
         </div>
 
@@ -972,6 +1255,16 @@ function CockpitView({
           <Signal label="ffmpeg" value={gallery.capabilities?.ffmpegAvailable ? "Disponivel" : "Ausente"} tone={gallery.capabilities?.ffmpegAvailable ? "good" : "bad"} />
           <Signal label="ExifTool" value={exiftoolStatusLabel(gallery)} tone={gallery.capabilities?.exiftoolAvailable ? "good" : "bad"} />
         </div>
+
+        <div className="panel span-2">
+          <SectionTitle eyebrow="Ambiente" title={diagnosticsStatusLabel(diagnostics)} action="Atualizar" onAction={onDiagnostics} />
+          <DiagnosticsPanel diagnostics={diagnostics} />
+        </div>
+
+        <div className="panel">
+          <SectionTitle eyebrow="Saude" title="Galeria" action="Atualizar" onAction={onHealth} />
+          <GalleryHealthPanel health={health} onFilter={onFilter} onView={onView} />
+        </div>
       </section>
     </div>
   );
@@ -982,12 +1275,16 @@ function GalleryView({
   vault,
   imports,
   filter,
+  gridMode,
   items,
   selectedItem,
+  catalog,
+  catalogBusy,
   galleryBusy,
   thumbsBusy,
   enrichBusy,
   onFilter,
+  onGridMode,
   onClear,
   onSelect,
   onRefresh,
@@ -995,17 +1292,23 @@ function GalleryView({
   onEnrich,
   onOpenPath,
   onRevealPath,
+  onSaveTags,
+  onSaveNote,
 }: {
   gallery: GalleryState;
   vault: Vault;
   imports: ImportItem[];
   filter: GalleryFilter;
+  gridMode: GridMode;
   items: GalleryItem[];
   selectedItem: GalleryItem | null;
+  catalog: AssetCatalog | null;
+  catalogBusy: boolean;
   galleryBusy: boolean;
   thumbsBusy: boolean;
   enrichBusy: boolean;
   onFilter: (filter: Partial<GalleryFilter>) => void;
+  onGridMode: (mode: GridMode) => void;
   onClear: () => void;
   onSelect: (id: number) => void;
   onRefresh: () => void;
@@ -1013,8 +1316,30 @@ function GalleryView({
   onEnrich: () => void;
   onOpenPath: (path?: string) => void;
   onRevealPath: (path?: string) => void;
+  onSaveTags: (assetId: number, tags: string[]) => void;
+  onSaveNote: (assetId: number, body: string) => void;
 }) {
+  const [visibleLimit, setVisibleLimit] = React.useState(GALLERY_PAGE_SIZE);
+  const [openFilter, setOpenFilter] = React.useState<string | null>(null);
+  React.useEffect(() => {
+    setVisibleLimit(GALLERY_PAGE_SIZE);
+  }, [
+    filter.media,
+    filter.year,
+    filter.month,
+    filter.extension,
+    filter.deviceType,
+    filter.device,
+    filter.camera,
+    filter.lens,
+    filter.size,
+    filter.problem,
+    filter.query,
+    gallery.items.length,
+  ]);
   const totalBytes = items.reduce((sum, item) => sum + Number(item.sizeBytes || 0), 0);
+  const visibleItems = items.slice(0, visibleLimit);
+  const hasMoreItems = visibleItems.length < items.length;
   const facetBase: GalleryFilter = { ...filter, month: "all", problem: "all", deviceType: "all", camera: "all", lens: "all" };
   const typeContext = filterGalleryItems(gallery.items, { ...facetBase, media: "all" });
   const yearContext = filterGalleryItems(gallery.items, { ...facetBase, year: "all" });
@@ -1044,31 +1369,39 @@ function GalleryView({
     filter.size,
     filter.problem,
   ].filter((value) => value !== "all").length + (filter.query.trim() ? 1 : 0);
+  React.useEffect(() => {
+    if (!openFilter) return;
+    function close(event: MouseEvent) {
+      if (!(event.target as Element).closest(".header-filter-menu")) setOpenFilter(null);
+    }
+    window.addEventListener("click", close);
+    return () => window.removeEventListener("click", close);
+  }, [openFilter]);
   return (
     <section className="gallery-layout">
       <div className="gallery-center">
         <div className="gallery-browser-header">
           <div className="gallery-heading">
             <span>{vault.name || "Galeria PhotoVault"}</span>
-            <strong>{formatNumber(items.length)} de {formatNumber(gallery.total)} itens</strong>
+            <strong>{formatNumber(visibleItems.length)} de {formatNumber(items.length)} filtrados</strong>
           </div>
           <label className="gallery-search">
             <Search size={15} />
             <input value={filter.query} onChange={(event) => onFilter({ query: event.target.value })} placeholder="Buscar nome, pasta, câmera, lente..." />
           </label>
           <div className="header-filter-row">
-            <HeaderFilterMenu title="Tipo" active={filter.media} totalLabel="Todos" total={typeContext.length} options={typeOptions} labelFor={mediaLabel} onPick={(value) => onFilter({ media: value })} />
-            <HeaderFilterMenu title="Ano" active={filter.year} totalLabel="Todos" total={yearContext.length} options={yearOptions} onPick={(value) => onFilter({ year: value })} />
-            <HeaderFilterMenu title="Extensao" active={normalizeExtension(filter.extension) === "all" ? "all" : `.${normalizeExtension(filter.extension)}`} totalLabel="Todas" total={extensionContext.length} options={extensionOptions} onPick={(value) => onFilter({ extension: normalizeExtension(value) })} />
-            <HeaderFilterMenu title="Dispositivo" active={filter.device} totalLabel="Todos" total={deviceContext.length} options={deviceOptions} onPick={(value) => onFilter({ device: value })} />
-            <HeaderFilterMenu title="Camera" active={filter.camera} totalLabel="Todas" total={cameraContext.length} options={cameraOptions} onPick={(value) => onFilter({ camera: value })} />
-            <HeaderFilterMenu title="Lente" active={filter.lens} totalLabel="Todas" total={lensContext.length} options={lensOptions} onPick={(value) => onFilter({ lens: value })} />
-            <HeaderFilterMenu title="Tamanho" active={filter.size} totalLabel="Todos" total={sizeContext.length} options={sizeOptions} labelFor={sizeLabel} onPick={(value) => onFilter({ size: value as GalleryFilter["size"] })} />
+            <HeaderFilterMenu id="media" openId={openFilter} onOpen={setOpenFilter} title="Tipo" active={filter.media} totalLabel="Todos" total={typeContext.length} options={typeOptions} labelFor={mediaLabel} onPick={(value) => onFilter({ media: value })} />
+            <HeaderFilterMenu id="year" openId={openFilter} onOpen={setOpenFilter} title="Ano" active={filter.year} totalLabel="Todos" total={yearContext.length} options={yearOptions} onPick={(value) => onFilter({ year: value })} />
+            <HeaderFilterMenu id="extension" openId={openFilter} onOpen={setOpenFilter} title="Extensao" active={normalizeExtension(filter.extension) === "all" ? "all" : `.${normalizeExtension(filter.extension)}`} totalLabel="Todas" total={extensionContext.length} options={extensionOptions} onPick={(value) => onFilter({ extension: normalizeExtension(value) })} />
+            <HeaderFilterMenu id="device" openId={openFilter} onOpen={setOpenFilter} title="Dispositivo" active={filter.device} totalLabel="Todos" total={deviceContext.length} options={deviceOptions} onPick={(value) => onFilter({ device: value })} />
+            <HeaderFilterMenu id="camera" openId={openFilter} onOpen={setOpenFilter} title="Camera" active={filter.camera} totalLabel="Todas" total={cameraContext.length} options={cameraOptions} onPick={(value) => onFilter({ camera: value })} />
+            <HeaderFilterMenu id="lens" openId={openFilter} onOpen={setOpenFilter} title="Lente" active={filter.lens} totalLabel="Todas" total={lensContext.length} options={lensOptions} onPick={(value) => onFilter({ lens: value })} />
+            <HeaderFilterMenu id="size" openId={openFilter} onOpen={setOpenFilter} title="Tamanho" active={filter.size} totalLabel="Todos" total={sizeContext.length} options={sizeOptions} labelFor={sizeLabel} onPick={(value) => onFilter({ size: value as GalleryFilter["size"] })} />
             <button className="ghost clear-header-filters" onClick={onClear} disabled={!activeFilterCount}><Filter size={15} /> Limpar {activeFilterCount ? `(${activeFilterCount})` : ""}</button>
           </div>
         </div>
         <div className="gallery-composition">
-          <BigNumber label="Arquivos" value={formatNumber(gallery.total)} detail={`${formatNumber(items.length)} exibidos agora`} />
+          <BigNumber label="Arquivos" value={formatNumber(gallery.total)} detail={`${formatNumber(visibleItems.length)} renderizados agora`} />
           <BigNumber label="Tamanho" value={gallery.bytes} detail={`${formatBytes(totalBytes)} nesta visao`} />
           <BigNumber label="Periodo" value={dateRangeLabel(gallery)} detail={`${formatNumber(gallery.yearCount)} anos | ${formatNumber(gallery.monthCount)} meses`} />
           <BigNumber label="Formatos" value={formatNumber(gallery.extensionCount)} detail={`${formatNumber(gallery.breakdowns.devices?.length ?? 0)} origens tecnicas`} />
@@ -1093,11 +1426,16 @@ function GalleryView({
         ) : null}
         <div className="gallery-toolbar">
           <div>
-            <strong>{formatNumber(items.length)} itens</strong>
-            <span>{formatBytes(totalBytes)} nesta visao</span>
+            <strong>{formatNumber(visibleItems.length)} de {formatNumber(items.length)} itens</strong>
+            <span>{formatBytes(totalBytes)} no filtro atual</span>
           </div>
           <div>
             <button className="ghost" onClick={onRefresh} disabled={galleryBusy}>Atualizar</button>
+            <div className="segmented-control" aria-label="Modo da grade">
+              <button className={gridMode === "fill" ? "active" : ""} onClick={() => onGridMode("fill")}>Preencher</button>
+              <button className={gridMode === "contain" ? "active" : ""} onClick={() => onGridMode("contain")}>Inteira</button>
+              <button className={gridMode === "compact" ? "active" : ""} onClick={() => onGridMode("compact")}>Compacta</button>
+            </div>
             <button className="primary" onClick={onHydrate} disabled={galleryBusy || thumbsBusy}><Images size={16} /> {thumbsBusy ? "Gerando..." : "Previews"}</button>
             <button className="primary" onClick={onEnrich} disabled={enrichBusy || !gallery.total}><Sparkles size={16} /> {enrichBusy ? "Lendo..." : "Metadados"}</button>
           </div>
@@ -1108,10 +1446,17 @@ function GalleryView({
             <button className="ghost" onClick={() => onFilter({ month: "all" })}>Limpar mes</button>
           </div>
         ) : null}
-        <div className="media-grid">
-          {items.map((item) => <MediaTile key={item.id} item={item} selected={selectedItem?.id === item.id} onClick={() => onSelect(item.id)} />)}
+        <div className={`media-grid grid-${gridMode}`}>
+          {visibleItems.map((item) => <MediaTile key={item.id} item={item} mode={gridMode} selected={selectedItem?.id === item.id} onClick={() => onSelect(item.id)} />)}
           {!items.length ? <EmptyState text={galleryBusy ? "Carregando galeria..." : "Nenhum item bate com os filtros atuais."} /> : null}
         </div>
+        {hasMoreItems ? (
+          <div className="load-more-row">
+            <button className="secondary" onClick={() => setVisibleLimit((current) => current + GALLERY_PAGE_SIZE)}>
+              <Layers3 size={15} /> Carregar mais {formatNumber(Math.min(GALLERY_PAGE_SIZE, items.length - visibleItems.length))}
+            </button>
+          </div>
+        ) : null}
       </div>
 
       <aside className="inspector">
@@ -1158,7 +1503,16 @@ function GalleryView({
             <MetaLine label="Origem metadata" value={metadataBadge(selectedItem)} />
             <MetaLine label="Asset ID" value={selectedItem?.assetId} />
             <MetaLine label="Instancia" value={selectedItem?.id} />
+            <MetaLine label="Tags" value={catalog?.tags.join(", ") || selectedItem?.tags} />
+            <MetaLine label="Notas" value={catalog?.notes.length ?? selectedItem?.noteCount} />
           </MetadataDrawer>
+          <CatalogEditor
+            item={selectedItem}
+            catalog={catalog}
+            busy={catalogBusy}
+            onSaveTags={onSaveTags}
+            onSaveNote={onSaveNote}
+          />
         </div>
         <div className="inspector-actions">
           <button className="secondary" onClick={() => onRevealPath(selectedItem?.path)} disabled={!selectedItem?.path}><FolderOpen size={15} /> Localizar</button>
@@ -1399,7 +1753,127 @@ function ImportStorageMeter({ disk }: { disk: Disk }) {
   );
 }
 
+function DiagnosticsPanel({ diagnostics }: { diagnostics: DiagnosticsState }) {
+  const required = diagnostics.tools.filter((item) => item.required);
+  const optional = diagnostics.tools.filter((item) => !item.required);
+  return (
+    <div className="diagnostics-panel">
+      <div className="diagnostics-summary">
+        <Terminal size={17} />
+        <div>
+          <strong>{diagnostics.summary}</strong>
+          <span>
+            {diagnostics.platform?.system || "Sistema"} {diagnostics.platform?.release || ""} | {diagnostics.requiredMissing} obrigatorios ausentes | {diagnostics.optionalMissing} opcionais ausentes
+          </span>
+        </div>
+      </div>
+      <div className="diagnostic-grid">
+        {[...required, ...optional].map((item) => (
+          <div className={`diagnostic-item ${item.status}`} key={item.label}>
+            <span>{item.label}</span>
+            <strong>{diagnosticValue(item)}</strong>
+            <em>{item.path || item.detail || (item.required ? "Obrigatorio" : "Opcional")}</em>
+          </div>
+        ))}
+      </div>
+      <div className="diagnostic-paths">
+        {diagnostics.paths.map((item) => (
+          <Signal key={item.label} label={item.label} value={item.detail || item.path} tone={item.status === "ok" ? "good" : "bad"} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function GalleryHealthPanel({ health, onFilter, onView }: { health: HealthState; onFilter: (filter: Partial<GalleryFilter>) => void; onView: (view: View) => void }) {
+  return (
+    <div className="health-panel">
+      <Signal label="Metadados pendentes" value={formatNumber(health.metadataPending)} tone={health.metadataPending ? "bad" : "good"} />
+      <Signal label="Sem data" value={formatNumber(health.withoutDate)} tone={health.withoutDate ? "bad" : "good"} />
+      <Signal label="Videos grandes" value={formatNumber(health.largeVideos)} />
+      <Signal label="Imports retomaveis" value={formatNumber(health.resumableImports?.length ?? 0)} tone={health.resumableImports?.length ? "bad" : "good"} />
+      <div className="health-actions">
+        <button className="secondary" onClick={() => onFilter({ problem: "without-date" })}>Sem data</button>
+        <button className="secondary" onClick={() => onFilter({ problem: "video", size: "large" })}>Videos</button>
+        <button className="secondary" onClick={() => onView("reviews")}>Imports</button>
+      </div>
+      <div className="health-insights">
+        {(health.insights ?? []).slice(0, 3).map((item) => (
+          <article key={item.title}>
+            <strong>{item.title}</strong>
+            <span>{item.detail}</span>
+          </article>
+        ))}
+        {!health.insights?.length ? <EmptyState text="Nenhum alerta operacional relevante agora." /> : null}
+      </div>
+      {health.resumableImports?.length ? (
+        <div className="resumable-list">
+          {health.resumableImports.slice(0, 3).map((item) => (
+            <article key={item.id}>
+              <strong>{item.name}</strong>
+              <span>{formatNumber(item.resumable)} pendentes | {formatNumber(item.done)} concluidos | {formatNumber(item.errors)} erros</span>
+            </article>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function CatalogEditor({
+  item,
+  catalog,
+  busy,
+  onSaveTags,
+  onSaveNote,
+}: {
+  item: GalleryItem | null;
+  catalog: AssetCatalog | null;
+  busy: boolean;
+  onSaveTags: (assetId: number, tags: string[]) => void;
+  onSaveNote: (assetId: number, body: string) => void;
+}) {
+  const [tagsText, setTagsText] = React.useState("");
+  const [noteText, setNoteText] = React.useState("");
+  React.useEffect(() => {
+    setTagsText((catalog?.tags ?? (item?.tags ? item.tags.split(",").map((value) => value.trim()).filter(Boolean) : [])).join(", "));
+    setNoteText("");
+  }, [item?.assetId, catalog?.tags.join("|")]);
+  if (!item) return null;
+  const tags = tagsText.split(",").map((value) => value.trim()).filter(Boolean);
+  return (
+    <MetadataDrawer title="Curadoria" open>
+      <div className="catalog-editor">
+        <label>
+          <span>Tags</span>
+          <input value={tagsText} onChange={(event) => setTagsText(event.target.value)} placeholder="familia, viagem, drone" />
+        </label>
+        <button className="secondary" disabled={busy} onClick={() => onSaveTags(item.assetId, tags)}><Tag size={14} /> Salvar tags</button>
+        <label>
+          <span>Nova nota</span>
+          <input value={noteText} onChange={(event) => setNoteText(event.target.value)} placeholder="Observacao de curadoria" />
+        </label>
+        <button className="secondary" disabled={busy || !noteText.trim()} onClick={() => {
+          onSaveNote(item.assetId, noteText);
+          setNoteText("");
+        }}>Adicionar nota</button>
+        <div className="note-list">
+          {(catalog?.notes ?? []).slice(0, 3).map((note) => (
+            <article key={note.id}>
+              <strong>{note.created_at?.slice(0, 16).replace("T", " ")}</strong>
+              <span>{note.body}</span>
+            </article>
+          ))}
+        </div>
+      </div>
+    </MetadataDrawer>
+  );
+}
+
 function HeaderFilterMenu({
+  id,
+  openId,
+  onOpen,
   title,
   active,
   totalLabel,
@@ -1408,6 +1882,9 @@ function HeaderFilterMenu({
   labelFor = (value: string) => value,
   onPick,
 }: {
+  id: string;
+  openId: string | null;
+  onOpen: (id: string | null) => void;
   title: string;
   active: string;
   totalLabel: string;
@@ -1418,28 +1895,38 @@ function HeaderFilterMenu({
 }) {
   const activeOption = options.find((item) => item.label.toLowerCase() === active.toLowerCase());
   const activeLabel = active === "all" ? totalLabel : labelFor(activeOption?.label ?? active);
+  const open = openId === id;
+  function pick(value: string) {
+    onPick(value);
+    onOpen(null);
+  }
   return (
-    <details className="header-filter-menu">
-      <summary>
+    <div className={open ? "header-filter-menu open" : "header-filter-menu"}>
+      <button className="header-filter-summary" onClick={(event) => {
+        event.stopPropagation();
+        onOpen(open ? null : id);
+      }}>
         <span>{title}</span>
         <strong>{activeLabel}</strong>
-      </summary>
-      <div className="header-filter-popover">
-        <button className={active === "all" ? "active" : ""} onClick={() => onPick("all")}>
-          <span>{totalLabel}</span>
-          <strong>{formatNumber(total)}</strong>
-        </button>
-        {options.filter((item) => item.count > 0).map((item) => {
-          const isActive = active.toLowerCase() === item.label.toLowerCase();
-          return (
-            <button key={item.label} className={isActive ? "active" : ""} onClick={() => onPick(item.label)}>
-              <span>{labelFor(item.label)}</span>
-              <strong>{formatNumber(item.count)}</strong>
-            </button>
-          );
-        })}
-      </div>
-    </details>
+      </button>
+      {open ? (
+        <div className="header-filter-popover" onClick={(event) => event.stopPropagation()}>
+          <button className={active === "all" ? "active" : ""} onClick={() => pick("all")}>
+            <span>{totalLabel}</span>
+            <strong>{formatNumber(total)}</strong>
+          </button>
+          {options.filter((item) => item.count > 0).map((item) => {
+            const isActive = active.toLowerCase() === item.label.toLowerCase();
+            return (
+              <button key={item.label} className={isActive ? "active" : ""} onClick={() => pick(item.label)}>
+                <span>{labelFor(item.label)}</span>
+                <strong>{formatNumber(item.count)}</strong>
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -1500,6 +1987,31 @@ function SectionTitle({ eyebrow, title, action, onAction }: { eyebrow: string; t
   );
 }
 
+type InsightAction = {
+  icon: React.ElementType;
+  title: string;
+  value: string;
+  detail: string;
+  action: string;
+  onClick: () => void;
+};
+
+function InsightGroup({ title, detail, items }: { title: string; detail: string; items: InsightAction[] }) {
+  return (
+    <div className="insight-group">
+      <div className="insight-group-heading">
+        <strong>{title}</strong>
+        <span>{detail}</span>
+      </div>
+      <div className="insight-pair">
+        {items.map((item) => (
+          <InsightCard key={item.title} {...item} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function InsightCard({ icon: Icon, title, value, detail, action, onClick }: { icon: React.ElementType; title: string; value: string; detail: string; action: string; onClick: () => void }) {
   return (
     <button className="insight-card tone-neutral" onClick={onClick}>
@@ -1542,20 +2054,30 @@ function MediaDistribution({ items, onPick }: { items: Bucket[]; onPick: (label:
   const totalBytes = items.reduce((sum, item) => sum + item.bytesRaw, 0);
   const ordered = [...items].sort((a, b) => b.count - a.count);
   if (!ordered.length) return <EmptyState text="Sem midias catalogadas." />;
+  let cursor = 0;
+  const segments = ordered.map((item) => {
+    const start = cursor;
+    const pct = totalCount ? (item.count / totalCount) * 100 : 0;
+    cursor += pct;
+    return `${mediaColor(item.label)} ${start}% ${cursor}%`;
+  });
   return (
     <div className="media-distribution">
-      <div className="media-stack" aria-label="Distribuicao por quantidade de arquivos">
-        {ordered.map((item) => {
-          const pct = totalCount ? Math.max(2, (item.count / totalCount) * 100) : 0;
-          return (
-            <button
-              key={item.label}
-              style={{ width: `${pct}%`, background: mediaColor(item.label) }}
-              title={`${mediaLabel(item.label)} | ${formatNumber(item.count)} arquivos | ${item.bytes}`}
-              onClick={() => onPick(item.label)}
-            />
-          );
-        })}
+      <div className="media-donut-wrap">
+        <div
+          className="media-donut"
+          style={{ background: `conic-gradient(${segments.join(", ")})` }}
+          aria-label="Distribuicao por quantidade de arquivos"
+        >
+          <div>
+            <strong>{formatNumber(totalCount)}</strong>
+            <span>arquivos</span>
+          </div>
+        </div>
+        <div className="media-donut-summary">
+          <strong>{formatBytes(totalBytes)}</strong>
+          <span>catalogados nas midias filtradas</span>
+        </div>
       </div>
       <div className="media-legend">
         {ordered.map((item) => {
@@ -1644,11 +2166,21 @@ function Chip({ active, children, onClick }: { active: boolean; children: React.
   return <button className={active ? "chip active" : "chip"} onClick={onClick}>{children}</button>;
 }
 
-function MediaTile({ item, selected, onClick }: { item: GalleryItem; selected: boolean; onClick: () => void }) {
+function aspectRatioForItem(item: GalleryItem) {
+  const [w, h] = String(item.resolution || "").split("x").map((value) => Number(value));
+  if (Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0) {
+    const ratio = Math.max(0.55, Math.min(w / h, 2.2));
+    return `${ratio}`;
+  }
+  if (isVideo(item)) return "1.777";
+  return "1.5";
+}
+
+function MediaTile({ item, mode, selected, onClick }: { item: GalleryItem; mode: GridMode; selected: boolean; onClick: () => void }) {
   const previewLabel = item.previewStatus === "placeholder" ? "placeholder" : item.previewStatus === "missing" ? "sem preview" : "preview";
   return (
-    <button className={`media-tile ${selected ? "active" : ""}`} onClick={onClick} title={item.path}>
-      <div className="tile-image">
+    <button className={`media-tile ${selected ? "active" : ""} mode-${mode}`} onClick={onClick} title={item.path}>
+      <div className="tile-image" style={{ aspectRatio: mode === "contain" ? aspectRatioForItem(item) : undefined }}>
         <SmartImage path={item.thumbnail} status={item.previewStatus} alt={item.name} icon={isVideo(item) ? Film : Camera} />
         <span>{isVideo(item) ? <Film size={13} /> : <Camera size={13} />}</span>
       </div>

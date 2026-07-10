@@ -45,6 +45,9 @@ export type GalleryItem = {
   metadataSource?: string;
   exiftoolVersion?: string;
   qualityScore: number;
+  tags?: string;
+  noteCount?: number;
+  latestNote?: string;
 };
 
 export const RAW_EXTENSIONS = new Set(["cr2", "cr3", "nef", "arw", "dng", "raf", "rw2", "orf"]);
@@ -127,7 +130,7 @@ export function filterGalleryItems(items: GalleryItem[], filter: GalleryFilter) 
     if (filter.problem === "raw" && !isRaw(item)) return false;
     if (
       query &&
-      !`${item.name} ${item.path} ${item.extension} ${item.date} ${item.deviceName} ${item.deviceType} ${normalizeCameraName(item.cameraMake, item.cameraModel, item.deviceName)} ${item.lensModel ?? ""} ${item.software ?? ""} ${item.codec ?? ""} ${item.fileType ?? ""}`
+      !`${item.name} ${item.path} ${item.extension} ${item.date} ${item.deviceName} ${item.deviceType} ${normalizeCameraName(item.cameraMake, item.cameraModel, item.deviceName)} ${item.lensModel ?? ""} ${item.software ?? ""} ${item.codec ?? ""} ${item.fileType ?? ""} ${item.tags ?? ""} ${item.latestNote ?? ""}`
         .toLowerCase()
         .includes(query)
     ) return false;

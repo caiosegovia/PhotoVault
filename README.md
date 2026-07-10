@@ -2,31 +2,46 @@
 
 PhotoVault e um app desktop para transformar pastas soltas de fotos e videos em uma galeria permanente, catalogada e auditavel.
 
-O foco atual nao e apenas copiar arquivos. O app cria um vault fixo, registra imports no SQLite, deduplica por identidade de midia, gera previews, instrumenta a copia e monta um cockpit para entender a galeria por tempo, formato, tamanho, decisao e metadados.
+O foco atual nao e apenas copiar arquivos. O app cria um vault fixo, registra imports no SQLite, deduplica por identidade de midia, gera previews, instrumenta a copia e monta um cockpit para entender a galeria por tempo, formato, tamanho, decisao, dispositivo e metadados.
 
 ## Estado Atual
 
-O fluxo funcional ja cobre:
+O fluxo funcional cobre:
 
 - configurar uma pasta de vault permanente;
 - selecionar uma origem com dialogo nativo do Windows;
-- analisar novos arquivos, duplicados e erros;
-- revisar decisoes por grupos acionaveis;
+- validar caminhos para evitar vault dentro da origem, origem dentro do vault e resets perigosos;
+- analisar novos arquivos, duplicados, conhecidos no vault e erros de metadados;
+- revisar decisoes por grupos acionaveis antes de copiar;
 - copiar com staging, verificacao por tamanho e metricas de tempo/MB/s;
+- registrar operacoes, instancias fisicas, imports e eventos de auditoria em SQLite;
 - gerar thumbnails de fotos, RAW suportados e frames de video;
 - enriquecer metadados com ExifTool opcional instalado no sistema;
-- navegar pela galeria com filtros por tipo, ano, mes, extensao, tamanho e problemas;
+- navegar pela galeria com filtros por texto, tipo, ano, mes, extensao, tamanho, dispositivo, camera, lente e problemas;
+- buscar no catalogo usando FTS5 do SQLite quando ha texto de busca;
+- renderizar a grade da galeria em lotes incrementais para manter a UI responsiva;
+- registrar tags e notas de curadoria por asset;
+- acompanhar saude da galeria, imports retomaveis e insights deterministicas no Cockpit;
 - abrir ou localizar arquivos no Explorer;
-- visualizar cockpit com composicao da galeria, storage, imports recentes e sinais operacionais;
-- preservar estado em banco local e logs em `%USERPROFILE%\.photovault`.
+- visualizar cockpit com composicao da galeria, storage, imports recentes, timeline, facetas e sinais operacionais;
+- diagnosticar ambiente local: Python, Node/npm, Cargo, ffmpeg, ffprobe, ExifTool e paths do app;
+- acompanhar progresso e logs em `%USERPROFILE%\.photovault`.
 
-## Como Testar
+## Como Rodar
 
 Build debug atual:
 
 ```text
 frontend\src-tauri\target\debug\app.exe
 ```
+
+Build de release para teste em outro Windows:
+
+```text
+frontend\src-tauri\target\release\bundle\
+```
+
+O release usa `frontend\src-tauri\resources\photovault-bridge.exe` como bridge Python empacotada por PyInstaller. Veja `docs/RELEASE.md` para gerar os sidecars antes de compilar o instalador.
 
 Para reconstruir:
 
@@ -37,83 +52,106 @@ npm.cmd run build
 npx.cmd tauri build --debug --no-bundle
 ```
 
-## Workflow
+## Workflow Do Usuario
 
 1. Abra o app Tauri.
 2. Configure o vault da galeria.
 3. Escolha a pasta de origem.
 4. Rode a analise.
-5. Revise os cards de decisao.
+5. Revise os grupos de decisao.
 6. Execute o plano.
 7. Abra a Galeria e gere/atualize previews.
 8. Use o Cockpit para entender volume, formatos, timeline, dispositivos e riscos.
+9. Rode enriquecimento de metadados quando ExifTool estiver disponivel.
 
-## Arquitetura Geral
+## Arquitetura Em Uma Tela
 
 ```mermaid
 flowchart LR
     User["Usuario"] --> UI["React + TypeScript<br/>frontend/src/main.tsx"]
-
-    UI --> Native["Tauri Rust<br/>src-tauri/src/lib.rs"]
-    Native --> Dialog["Dialogo nativo<br/>rfd"]
-    Native --> Explorer["Abrir/localizar<br/>explorer.exe"]
-    Native --> Bridge["bridge.py<br/>CLI JSON"]
+    UI --> Tauri["Tauri Rust<br/>src-tauri/src/lib.rs"]
+    Tauri --> Native["Dialogos nativos<br/>Explorer"]
+    Tauri --> Bridge["bridge.py<br/>CLI JSON"]
 
     Bridge --> Core["Core Python"]
     Core --> Imports["imports.py<br/>analise"]
-    Core --> Ingestion["ingestion.py<br/>copia instrumentada"]
-    Core --> Thumb["thumbnail_cache.py<br/>Pillow + imageio-ffmpeg"]
-    Core --> Metadata["metadata.py<br/>EXIF, hachoir, ffprobe opcional"]
-    Core --> ExifTool["metadata_enrichment.py<br/>ExifTool opcional"]
-    Core --> Safety["safety.py<br/>validacao de caminhos"]
+    Core --> Ingestion["ingestion.py<br/>staging + copia"]
+    Core --> Catalog["database.py<br/>catalogo SQLite"]
+    Core --> Thumb["thumbnail_cache.py<br/>previews"]
+    Core --> Enrich["metadata_enrichment.py<br/>ExifTool opcional"]
+    Core --> Safety["safety.py<br/>validacoes"]
 
-    Core --> DB["SQLite<br/>%USERPROFILE%/.photovault/database.db"]
-    Core --> Progress["progress.json<br/>status e metricas"]
+    Catalog --> DB["%USERPROFILE%/.photovault/database.db"]
+    Core --> Progress["progress.json"]
     Core --> Logs["photovault.log"]
-
-    Sources["Origens<br/>HDs, backups, exports"] --> Imports
-    Imports --> Plan["Plano de ingestao<br/>import / skip / review"]
-    Plan --> Ingestion
-    Ingestion --> Vault["Vault permanente<br/>estrutura por padrao"]
-    Vault --> Gallery["Galeria"]
-    Gallery --> DB
-    DB --> UI
+    Ingestion --> Vault["Vault permanente"]
+    Vault --> Gallery["Galeria navegavel"]
+    Gallery --> UI
 ```
 
-## Pipeline de Importacao
+Documentacao detalhada:
 
-```mermaid
-sequenceDiagram
-    participant U as Usuario
-    participant UI as React/Tauri
-    participant B as bridge.py
-    participant I as imports.py
-    participant E as ingestion.py
-    participant DB as SQLite
-    participant V as Vault
+- [Arquitetura e contratos](docs/ARCHITECTURE.md)
+- [Roadmap e melhorias propostas](docs/ROADMAP.md)
+- [Checklist de release](docs/RELEASE.md)
 
-    U->>UI: seleciona vault e origem
-    UI->>B: analyze_import
-    B->>I: create_import_analysis()
-    I->>DB: cria import, plano e arquivos
-    I->>DB: registra assets e metadados base
-    I-->>B: resumo de novos, duplicados e erros
-    B-->>UI: estado atualizado
-    U->>UI: ajusta decisoes por card
-    UI->>B: update_decision_group
-    B->>DB: persiste decisoes
-    U->>UI: executa plano
-    UI->>B: execute_import
-    B->>E: execute_ingest_plan()
-    E->>V: copia com staging
-    E->>DB: atualiza operacoes, import e instancias
-    E-->>B: metricas de copia
-    B-->>UI: progresso e resultado
+## Mapa Do Codigo
+
+```text
+PhotoVault/
+  bridge.py                         # contrato JSON entre Tauri e core Python
+  core/
+    database.py                     # schema SQLite, catalogo, facetas e processamento
+    imports.py                      # analise de origem e plano inicial de importacao
+    ingestion.py                    # execucao de planos, staging, verificacao e metricas
+    identity.py                     # identidade por hash/metadados e score de qualidade
+    metadata.py                     # extractors internos: exifread, Pillow, hachoir/ffprobe
+    metadata_enrichment.py          # enriquecimento retroativo com ExifTool opcional
+    runtime_tools.py                # descoberta de ffmpeg, ffprobe, perl e exiftool
+    safety.py                       # validacoes de caminho e reset
+    thumbnail_cache.py              # cache de previews
+    vault.py                        # paths canonicos do vault
+    organizer.py                    # fluxo antigo/auxiliar ainda coberto por testes
+    scanner.py                      # scan generico ainda coberto por testes
+    inventory.py                    # inventario de fontes ainda coberto por testes
+  frontend/
+    src/main.tsx                    # app React, cockpit, galeria, imports, logs
+    src/galleryFilters.ts           # filtros e normalizacoes da galeria
+    src/styles.css                  # UI desktop
+    src-tauri/src/lib.rs            # comandos nativos e execucao da bridge Python
+  tests/                            # suite Python
+  frontend/tests/                   # testes TypeScript de filtros
 ```
+
+## Contrato Bridge
+
+O frontend chama `invoke("bridge", { command, payload })`. O Tauri executa `.venv\Scripts\python.exe bridge.py <command>`, envia o payload por stdin e espera JSON no stdout.
+
+Comandos ativos:
+
+| Comando | Papel |
+|---|---|
+| `state` | Carrega vault, imports, resumo da galeria, disco, progresso e logs. |
+| `set_vault` | Salva nome, caminho e padrao de organizacao do vault. |
+| `analyze_import` | Analisa uma origem, cria import, arquivos e plano. |
+| `import_insights` | Retorna grupos de decisao do import selecionado. |
+| `update_decision_group` | Persiste decisao em lote por motivo. |
+| `execute_import` | Executa o plano de ingestao com staging e metricas. |
+| `gallery` | Lista itens e facetas da galeria; opcionalmente gera thumbnails. |
+| `search_gallery` | Busca itens no catalogo via FTS5/SQLite. |
+| `enrich_metadata` | Roda enriquecimento retroativo via ExifTool quando disponivel. |
+| `health` | Retorna saude operacional, imports retomaveis, jobs e insights. |
+| `catalog` | Retorna tags e notas de um asset. |
+| `update_tags` | Atualiza tags manuais de um asset. |
+| `add_note` | Adiciona nota de curadoria a um asset. |
+| `progress` | Retorna progresso atual e metricas de jobs longos. |
+| `logs` | Retorna tail do log local. |
+| `diagnostics` | Retorna prontidao do ambiente local e ferramentas opcionais. |
+| `reset_all` | Limpa estado local do app sem apagar a galeria fisica. |
 
 ## Catalogo Perene
 
-O banco passou a ser tratado como catalogo, nao apenas cache de operacao.
+O banco e tratado como catalogo, nao apenas cache de operacao.
 
 Tabelas centrais:
 
@@ -127,85 +165,14 @@ Tabelas centrais:
 | `ingest_plans` | Planos executaveis. |
 | `ingest_operations` | Operacoes individuais de copiar/ignorar. |
 | `metadata_extractions` | Metadados brutos e proveniencia por extractor. |
+| `asset_processing_state` | Fila/estado de processadores como ExifTool. |
 | `catalog_search` | Indice FTS5 para busca textual futura. |
 | `catalog_tags` | Tags do catalogo. |
 | `asset_tags` | Relacao de tags com assets. |
 | `catalog_notes` | Notas humanas ou derivadas por IA/agente. |
 | `audit_events` | Eventos de auditoria. |
 
-Essa base prepara o app para consultas ricas e um agente de insights no futuro: perguntas sobre periodos, formatos, cameras, itens sem data, videos pesados, duplicatas, tags e curadoria.
-
-## Thumbnails e Video
-
-Fotos e RAW suportados usam Pillow.
-
-Videos usam `imageio-ffmpeg`, que entrega um binario local de `ffmpeg` dentro do ambiente Python. Assim o app nao depende de `ffmpeg` estar instalado no PATH do Windows para gerar frames.
-
-O cache fica em:
-
-```text
-%USERPROFILE%\.photovault\thumbs
-```
-
-Se o cache for apagado, o app recria os previews sob demanda pelo botao `Previews`.
-
-## Metadados Ricos
-
-O PhotoVault nao embarca mais binarios do ExifTool. Por seguranca, o enriquecimento rico so usa `exiftool` ou `exiftool.exe` quando a ferramenta esta instalada no sistema e disponivel no PATH.
-
-Quando presente, o botao `Enriquecer` no Cockpit ou `Metadados` na Galeria roda um enriquecimento retroativo dos assets ja importados. O processo salva o JSON bruto em `metadata_extractions`, promove campos normalizados para o catalogo e atualiza a busca/facetas.
-
-Campos aproveitados incluem:
-
-- camera, modelo, lente e software;
-- data original/criacao;
-- dimensoes, duracao, codec, bitrate e frame rate quando presentes;
-- GPS quando presente no arquivo;
-- tipo de dispositivo normalizado.
-
-Sem ExifTool, o app continua funcionando com os extractors internos (`exifread`, Pillow, hachoir e ffprobe quando disponivel) e mostra o status `Ausente` na interface.
-
-## Metricas de Copia
-
-A execucao registra:
-
-- arquivos copiados, ignorados e com erro;
-- bytes importados;
-- MB/s medio;
-- MB/s do ultimo arquivo;
-- tempo de copia, verificacao, banco e finalizacao;
-- maior arquivo;
-- arquivo mais lento.
-
-Essas metricas aparecem no progresso e ficam nos logs/auditoria para comparacao entre execucoes.
-
-## Estrutura do Projeto
-
-```text
-PhotoVault/
-  bridge.py
-  core/
-    database.py
-    imports.py
-    ingestion.py
-    identity.py
-    metadata.py
-    metadata_enrichment.py
-    runtime_tools.py
-    safety.py
-    scanner.py
-    thumbnail_cache.py
-    vault.py
-  frontend/
-    src/main.tsx
-    src/styles.css
-    src-tauri/
-      src/lib.rs
-      Cargo.toml
-      tauri.conf.json
-  tests/
-  utils/
-```
+Essa base prepara o app para consultas ricas e um agente de insights no futuro: perguntas sobre periodos, formatos, cameras, itens sem data, videos pesados, duplicatas, tags, notas e curadoria.
 
 ## Dados Locais
 
@@ -219,16 +186,14 @@ PhotoVault/
 
 O reset local do app limpa o estado do PhotoVault, mas nao apaga a galeria fisica do vault.
 
-## Requisitos
+## Dependencias
 
 - Windows 10/11
 - Python 3.12+
 - Node.js
 - Rust/Cargo
 - Visual Studio Build Tools com toolchain C++ para Tauri
-- ExifTool e opcional; se usado, deve vir de uma instalacao externa confiavel no PATH
-
-## Setup
+- ExifTool opcional; se usado, deve vir de uma instalacao externa confiavel no PATH
 
 Python:
 
@@ -248,10 +213,17 @@ npm install
 
 ## Comandos Uteis
 
-Testes:
+Testes Python:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -q --basetemp=.pytest-tmp
+```
+
+Teste TypeScript dos filtros:
+
+```powershell
+cd frontend
+npm.cmd run test:filters
 ```
 
 Build frontend:
@@ -275,24 +247,43 @@ cd frontend
 npx.cmd tauri build --debug --no-bundle
 ```
 
+## Testes Cobertos
+
+A suite atual cobre:
+
+- contrato de galeria da bridge;
+- schema/catalogo SQLite;
+- deduplicacao;
+- classificacao de dispositivos;
+- insights da galeria;
+- analise e execucao de imports;
+- ingestao com staging, duplicatas e capacidade de disco;
+- enriquecimento com ExifTool opcional;
+- organizador/scanner/inventory legados;
+- filtros TypeScript da galeria.
+
 ## Decisoes Tecnicas Recentes
 
 - Tauri/Rust assumiu dialogo de pasta e abrir/localizar no Explorer.
 - A bridge Python ficou responsavel pelo contrato JSON e core de dominio.
-- `tkinter`, `customtkinter`, `matplotlib`, a GUI Python antiga e o build PyInstaller foram removidos do projeto ativo.
+- `tkinter`, `customtkinter`, `matplotlib`, GUI Python antiga e build PyInstaller foram removidos do caminho ativo.
 - Dependencias frontend foram pinadas no `package.json`.
 - `imageio-ffmpeg` foi adicionado para previews de video.
 - `pytest.ini` usa cache local do projeto.
 - `scanner.py` passou a usar `os.walk` e relatorio estruturado.
-- Validacoes de caminho evitam importar vault dentro da origem, origem dentro do vault e resets perigosos.
+- Validacoes de caminho evitam operacoes perigosas.
 - O caminho ativo do app desktop e exclusivamente Tauri/React com bridge Python.
-- O enriquecimento retroativo com ExifTool foi mantido como capacidade opcional e nao bloqueante.
-- Binarios embutidos do ExifTool foram removidos do pacote Tauri; o app nao injeta mais `PHOTOVAULT_EXIFTOOL` na bridge.
+- O enriquecimento retroativo com ExifTool e opcional e nao bloqueante.
+- Binarios embutidos do ExifTool foram removidos do pacote Tauri.
+- O Cockpit passou a mostrar diagnostico de ambiente via bridge.
+- A galeria passou a usar busca FTS5 para texto, renderizacao incremental, tags/notas e painel de saude.
 
 ## Pendencias Conhecidas
 
 - O catalogo ja tem base para IA/agente, mas ainda nao chama modelos externos.
-- As facetas de camera dependem de metadados realmente extraidos; imports antigos podem aparecer como `Desconhecido` ate receberem enriquecimento com ExifTool ou outro extractor rico.
+- As facetas de camera dependem de metadados realmente extraidos; imports antigos podem aparecer como `Desconhecido` ate receberem enriquecimento.
+- A grade da galeria ja renderiza em lotes, mas a consulta ainda carrega um limite alto em memoria; paginacao SQLite continua como prioridade.
+- Jobs longos ainda rodam como chamadas bridge sincrona disparadas pelo Tauri; ja existe base de `background_jobs`, mas workers retomaveis completos ainda sao evolucao futura.
 
 ## Licenca
 

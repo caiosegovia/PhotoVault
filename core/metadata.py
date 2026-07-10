@@ -155,7 +155,18 @@ def _extract_video_date(path: Path) -> Optional[datetime]:
 
 
 def _extract_video_metadata(path: Path) -> dict:
-    fields = {'make': None, 'model': None, 'software': None, 'lens_model': None}
+    fields = {
+        'make': None,
+        'model': None,
+        'software': None,
+        'lens_model': None,
+        'duration': None,
+        'width': None,
+        'height': None,
+        'codec': None,
+        'bitrate': None,
+        'frame_rate': None,
+    }
     ffprobe = ffprobe_path()
     if not ffprobe:
         return fields
@@ -172,10 +183,26 @@ def _extract_video_metadata(path: Path) -> dict:
             stream_tags = {}
             for stream in data.get('streams', []) or []:
                 stream_tags.update(stream.get('tags', {}) or {})
+                if stream.get('codec_type') == 'video':
+                    fields['width'] = fields['width'] or stream.get('width')
+                    fields['height'] = fields['height'] or stream.get('height')
+                    fields['codec'] = fields['codec'] or stream.get('codec_name') or stream.get('codec_long_name')
+                    fields['bitrate'] = fields['bitrate'] or stream.get('bit_rate')
+                    rate = stream.get('avg_frame_rate') or stream.get('r_frame_rate')
+                    if rate and rate != '0/0':
+                        try:
+                            num, den = str(rate).split('/')
+                            fields['frame_rate'] = float(num) / float(den)
+                        except Exception:
+                            fields['frame_rate'] = rate
             tags = {**stream_tags, **tags}
             fields['make'] = tags.get('make') or tags.get('com.apple.quicktime.make')
             fields['model'] = tags.get('model') or tags.get('com.apple.quicktime.model')
             fields['software'] = tags.get('encoder') or tags.get('software') or tags.get('com.apple.quicktime.software')
+            fmt = data.get('format', {}) or {}
+            if fmt.get('duration'):
+                fields['duration'] = float(fmt.get('duration'))
+            fields['bitrate'] = fields['bitrate'] or fmt.get('bit_rate')
     except Exception:
         pass
     return fields
@@ -280,7 +307,16 @@ def get_media_info(path: Path) -> dict:
         except Exception:
             pass
         device_fields = _extract_video_metadata(path)
-        device = classify_device(path=path, **device_fields)
+        info['duration'] = info['duration'] or device_fields.get('duration')
+        info['width'] = info['width'] or device_fields.get('width')
+        info['height'] = info['height'] or device_fields.get('height')
+        device = classify_device(
+            path=path,
+            make=device_fields.get('make'),
+            model=device_fields.get('model'),
+            software=device_fields.get('software'),
+            lens_model=device_fields.get('lens_model'),
+        )
         info.update({
             'camera_make': device.make,
             'camera_model': device.model,

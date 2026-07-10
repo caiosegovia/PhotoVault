@@ -149,3 +149,33 @@ def test_query_gallery_records_filters_quality_role_and_media_type(tmp_path, mon
 
     assert [row['path'] for row in low] == ['D:/Camera/low.jpg']
     assert [row['path'] for row in dest_videos] == ['D:/Vault/video.mp4']
+
+
+def test_catalog_tags_notes_and_search_for_gallery_asset(tmp_path, monkeypatch):
+    import core.database as database
+
+    monkeypatch.setattr(database, 'DB_PATH', tmp_path / 'database.db')
+    database.init_db()
+
+    asset_id = database.upsert_asset({
+        'sha256': 'asset-drone',
+        'size': 1234,
+        'media_type': 'video',
+        'extension': '.mp4',
+        'date_taken': datetime(2026, 1, 2, 3, 4, 5),
+    })
+    database.save_asset_instance(asset_id, 'D:/Vault/drone-shot.mp4', role='destination')
+
+    tags = database.save_asset_tags(asset_id, ['drone', 'viagem'])
+    note_id = database.add_catalog_note(asset_id, 'Take bom para editar')
+    catalog = database.get_asset_catalog(asset_id)
+    results = database.search_gallery_assets('drone', limit=10)
+    health = database.gallery_health()
+
+    assert tags == ['drone', 'viagem']
+    assert note_id > 0
+    assert catalog['tags'] == ['drone', 'viagem']
+    assert catalog['notes'][0]['body'] == 'Take bom para editar'
+    assert results[0]['asset_id'] == asset_id
+    assert results[0]['tags'] == 'drone, viagem'
+    assert health['total'] == 1

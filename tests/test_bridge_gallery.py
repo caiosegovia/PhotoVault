@@ -32,6 +32,8 @@ def test_gallery_payload_lists_assets_once_after_backfill(monkeypatch):
     monkeypatch.setattr(bridge, 'exiftool_version', lambda: '')
     monkeypatch.setattr(bridge, 'exiftool_status', lambda: {'available': False})
     monkeypatch.setattr(bridge, 'processing_summary', lambda _processor: {'total': 0})
+    monkeypatch.setattr(bridge, 'environment_diagnostics', lambda: {'status': 'ok'})
+    monkeypatch.setattr(bridge, 'gallery_health', lambda: {'total': 0})
 
     def list_assets(limit):
         calls.append(f'assets:{limit}')
@@ -93,11 +95,15 @@ def test_state_returns_gallery_summary_without_loading_items(monkeypatch):
     monkeypatch.setattr(bridge, 'exiftool_version', lambda: '')
     monkeypatch.setattr(bridge, 'exiftool_status', lambda: {'available': False})
     monkeypatch.setattr(bridge, 'processing_summary', lambda _processor: {'total': 0})
+    monkeypatch.setattr(bridge, 'environment_diagnostics', lambda: {'status': 'ok'})
+    monkeypatch.setattr(bridge, 'gallery_health', lambda: {'total': 0})
 
     result = bridge.state({})
 
     assert result['gallery']['total'] == 25000
     assert result['gallery']['items'] == []
+    assert result['diagnostics']['status'] == 'ok'
+    assert result['health']['total'] == 0
 
 
 def test_gallery_payload_can_hydrate_thumbnails_in_same_pass(tmp_path, monkeypatch):
@@ -153,3 +159,33 @@ def test_gallery_payload_can_hydrate_thumbnails_in_same_pass(tmp_path, monkeypat
     assert str(photo) in hydrated
     assert result['items'][0]['thumbnail'] == str(thumb)
     assert result['items'][0]['previewStatus'] == 'ready'
+
+
+def test_search_gallery_uses_search_assets(monkeypatch):
+    import bridge
+
+    monkeypatch.setattr(bridge, 'init_db', lambda: None)
+    monkeypatch.setattr(bridge, '_gallery_payload', lambda _limit, include_items=False: {
+        'items': [],
+        'total': 2,
+        'breakdowns': {'media': [], 'years': [], 'months': [], 'extensions': []},
+    })
+    monkeypatch.setattr(bridge, 'search_gallery_assets', lambda query, limit: [{
+        'instance_id': 9,
+        'asset_id': 13,
+        'path': 'D:/Vault/drone-shot.mp4',
+        'media_type': 'video',
+        'extension': '.mp4',
+        'size': 20,
+        'tags': 'drone',
+        'note_count': 1,
+        'latest_note': 'Bom take',
+    }] if query == 'drone' and limit == 25 else [])
+    monkeypatch.setattr(bridge, 'get_cached_thumbnail', lambda _path: None)
+    monkeypatch.setattr(bridge, 'has_ffmpeg', lambda: True)
+
+    result = bridge.search_gallery({'query': 'drone', 'limit': 25})
+
+    assert result['search']['count'] == 1
+    assert result['items'][0]['tags'] == 'drone'
+    assert result['items'][0]['latestNote'] == 'Bom take'

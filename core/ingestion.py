@@ -336,6 +336,12 @@ def execute_ingest_plan(
             if callback and index == 0:
                 callback(0, len(operations), src, {'event': 'start', **stats})
 
+            if op['status'] in {'done', 'skipped'}:
+                stats['skipped'] += 1
+                if callback and (index == len(operations) - 1 or (index + 1) % 25 == 0):
+                    callback(index + 1, len(operations), src, {'event': 'already_done', **stats})
+                continue
+
             if op['action'] == 'skip':
                 db_started = time.perf_counter()
                 update_ingest_operation_status(op['id'], 'skipped')

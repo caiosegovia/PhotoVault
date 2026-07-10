@@ -7,16 +7,23 @@ import time
 from pathlib import Path
 
 from core.database import (
+    add_catalog_note,
     backfill_catalog_metadata_from_gallery,
     gallery_breakdowns,
+    gallery_health,
     gallery_totals,
+    get_asset_catalog,
     get_import_files,
     get_latest_vault,
     init_db,
+    job_summary,
     list_gallery_assets,
     list_imports,
     processing_summary,
+    resumable_imports,
+    save_asset_tags,
     save_vault,
+    search_gallery_assets,
     summarize_import_decisions,
     update_import_file_decision,
 )
@@ -25,7 +32,7 @@ from core.ingestion import execute_ingest_plan
 from core.metadata_enrichment import enrich_gallery_metadata
 from core.patterns import validate_pattern
 from core.safety import validate_import_paths, validate_reset_root
-from core.runtime_tools import exiftool_status, exiftool_version, has_exiftool, has_ffmpeg
+from core.runtime_tools import environment_diagnostics, exiftool_status, exiftool_version, has_exiftool, has_ffmpeg
 from core.thumbnail_cache import ensure_thumbnail, get_cached_thumbnail
 from utils.constants import CONFIG_DIR
 from utils.formatting import format_size
@@ -211,6 +218,9 @@ def _gallery_row(row: dict, include_thumb: bool = True) -> dict:
         'metadataSource': 'ExifTool' if row.get('exiftool_version') else 'PhotoVault',
         'exiftoolVersion': row.get('exiftool_version') or '',
         'qualityScore': row.get('quality_score') or 0,
+        'tags': row.get('tags') or '',
+        'noteCount': row.get('note_count') or 0,
+        'latestNote': row.get('latest_note') or '',
     }
 
 
@@ -368,6 +378,10 @@ def state(_payload: dict) -> dict:
     gallery_at = time.perf_counter()
     progress_data = _progress_payload()
     progress_at = time.perf_counter()
+    diagnostics_data = environment_diagnostics()
+    diagnostics_at = time.perf_counter()
+    health_data = gallery_health()
+    health_at = time.perf_counter()
     return {
         'vault': {
             'id': vault['id'] if vault else None,
@@ -381,6 +395,8 @@ def state(_payload: dict) -> dict:
         'gallery': gallery_data,
         'disk': _disk(vault_path, pending),
         'progress': progress_data,
+        'diagnostics': diagnostics_data,
+        'health': health_data,
         'logPath': str(get_log_path()),
         'timings': {
             'vaultSeconds': vault_at - started,
@@ -388,6 +404,8 @@ def state(_payload: dict) -> dict:
             'insightsSeconds': insights_at - imports_at,
             'gallerySeconds': gallery_at - insights_at,
             'progressSeconds': progress_at - gallery_at,
+            'diagnosticsSeconds': diagnostics_at - progress_at,
+            'healthSeconds': health_at - diagnostics_at,
             'totalSeconds': time.perf_counter() - started,
         },
     }
@@ -474,6 +492,56 @@ def gallery(payload: dict) -> dict:
     return _gallery_payload(limit, ensure_thumbnails=ensure)
 
 
+def search_gallery(payload: dict) -> dict:
+    init_db()
+    query = payload.get('query') or ''
+    limit = int(payload.get('limit') or 240)
+    ensure = bool(payload.get('ensureThumbnails'))
+    base = _gallery_payload(0, include_items=False)
+    assets = search_gallery_assets(query, limit=limit)
+    base['items'] = _gallery_items(assets, ensure_thumbnails=ensure)
+    base['search'] = {'query': query, 'count': len(base['items']), 'limit': limit}
+    return base
+
+
+def health(_payload: dict) -> dict:
+    init_db()
+    data = gallery_health()
+    data['resumableImports'] = resumable_imports()
+    data['jobs'] = job_summary()
+    data['insights'] = deterministic_insights(data)
+    return data
+
+
+def deterministic_insights(health_data: dict) -> list[dict]:
+    insights = []
+    if health_data.get('metadataPending'):
+        insights.append({
+            'title': 'Metadados pendentes',
+            'detail': f"{health_data['metadataPending']} itens precisam de ExifTool ou retry.",
+            'action': 'enrich_metadata',
+        })
+    if health_data.get('withoutDate'):
+        insights.append({
+            'title': 'Linha do tempo incompleta',
+            'detail': f"{health_data['withoutDate']} itens estao sem data catalogada.",
+            'action': 'filter_without_date',
+        })
+    if health_data.get('largeVideos'):
+        insights.append({
+            'title': 'Videos pesados',
+            'detail': f"{health_data['largeVideos']} videos passam de 50 MB.",
+            'action': 'filter_large_videos',
+        })
+    if health_data.get('openImports'):
+        insights.append({
+            'title': 'Imports retomaveis',
+            'detail': f"{health_data['openImports']} importacoes merecem revisao ou retomada.",
+            'action': 'resume_import',
+        })
+    return insights
+
+
 def enrich_metadata(payload: dict) -> dict:
     init_db()
     limit = int(payload.get('limit') or 1000)
@@ -536,6 +604,29 @@ def update_decision_group(payload: dict) -> dict:
     for item in files:
         update_import_file_decision(int(item['id']), decision)
     return {'ok': True, 'updated': len(files), 'importInsights': _import_insights(import_id)}
+
+
+def catalog(payload: dict) -> dict:
+    init_db()
+    asset_id = int(payload.get('assetId'))
+    return get_asset_catalog(asset_id)
+
+
+def update_tags(payload: dict) -> dict:
+    init_db()
+    asset_id = int(payload.get('assetId'))
+    labels = payload.get('tags') or []
+    if isinstance(labels, str):
+        labels = [item.strip() for item in labels.split(',')]
+    save_asset_tags(asset_id, labels)
+    return {'ok': True, 'catalog': get_asset_catalog(asset_id)}
+
+
+def add_note(payload: dict) -> dict:
+    init_db()
+    asset_id = int(payload.get('assetId'))
+    add_catalog_note(asset_id, payload.get('body') or '')
+    return {'ok': True, 'catalog': get_asset_catalog(asset_id)}
 
 
 def execute_import(payload: dict) -> dict:
@@ -656,6 +747,10 @@ def logs(payload: dict) -> dict:
     return {'logPath': str(get_log_path()), 'lines': _tail_log(int(payload.get('lines') or 120))}
 
 
+def diagnostics(_payload: dict) -> dict:
+    return environment_diagnostics()
+
+
 COMMANDS = {
     'state': state,
     'set_vault': set_vault,
@@ -667,9 +762,15 @@ COMMANDS = {
     'execute_import': execute_import,
     'reset_all': reset_all,
     'gallery': gallery,
+    'search_gallery': search_gallery,
     'enrich_metadata': enrich_metadata,
+    'health': health,
+    'catalog': catalog,
+    'update_tags': update_tags,
+    'add_note': add_note,
     'progress': progress,
     'logs': logs,
+    'diagnostics': diagnostics,
 }
 
 

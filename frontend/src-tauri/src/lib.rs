@@ -1,9 +1,10 @@
 use serde_json::Value;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
+use tauri::Manager;
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -20,20 +21,49 @@ fn python_path() -> PathBuf {
   repo_root().join(".venv").join("Scripts").join("python.exe")
 }
 
+fn resource_path(app: &tauri::AppHandle, name: &str) -> Option<PathBuf> {
+  let mut candidates = Vec::new();
+  if let Ok(resource_dir) = app.path().resource_dir() {
+    candidates.push(resource_dir.join(name));
+  }
+  if let Ok(exe) = std::env::current_exe() {
+    if let Some(dir) = exe.parent() {
+      candidates.push(dir.join(name));
+    }
+  }
+  candidates.into_iter().find(|path| path.exists())
+}
+
+fn bridge_command(app: &tauri::AppHandle) -> (PathBuf, Vec<PathBuf>, PathBuf) {
+  if let Some(sidecar) = resource_path(app, "photovault-bridge.exe") {
+    return (sidecar, Vec::new(), std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf)).unwrap_or_else(repo_root));
+  }
+  let root = repo_root();
+  (python_path(), vec![root.join("bridge.py")], root)
+}
+
 #[tauri::command]
-async fn bridge(command: String, payload: Value) -> Result<Value, String> {
+async fn bridge(app: tauri::AppHandle, command: String, payload: Value) -> Result<Value, String> {
   tauri::async_runtime::spawn_blocking(move || {
-    let root = repo_root();
-    let mut command_builder = Command::new(python_path());
+    let (program, prefix_args, working_dir) = bridge_command(&app);
+    let mut command_builder = Command::new(program);
+    for arg in prefix_args {
+      command_builder.arg(arg);
+    }
     command_builder
-      .arg(root.join("bridge.py"))
       .arg(command)
-      .current_dir(&root)
+      .current_dir(&working_dir)
       .env("PYTHONUTF8", "1")
       .env("PYTHONIOENCODING", "utf-8")
       .stdin(Stdio::piped())
       .stdout(Stdio::piped())
       .stderr(Stdio::piped());
+    if let Some(ffmpeg) = resource_path(&app, "ffmpeg.exe") {
+      command_builder.env("PHOTOVAULT_FFMPEG", ffmpeg);
+    }
+    if let Some(ffprobe) = resource_path(&app, "ffprobe.exe") {
+      command_builder.env("PHOTOVAULT_FFPROBE", ffprobe);
+    }
     #[cfg(windows)]
     command_builder.creation_flags(CREATE_NO_WINDOW);
 

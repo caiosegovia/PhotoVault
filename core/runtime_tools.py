@@ -1,20 +1,45 @@
 import logging
 import json
 import os
+import platform
 import shutil
 import subprocess
+import sys
 from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
-from utils.constants import CONFIG_DIR
+from utils.constants import CONFIG_DIR, DB_PATH
+from utils.logging import get_log_path
 
 log = logging.getLogger(__name__)
 
 
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parent.parent
+
+
+def _static_media_tool(name: str) -> Optional[str]:
+    package_dir = _repo_root() / "frontend" / "node_modules" / "ffmpeg-ffprobe-static"
+    candidates = [
+        package_dir / f"{name}.exe",
+        package_dir / name,
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+    return None
+
+
 @lru_cache(maxsize=1)
 def ffmpeg_path() -> Optional[str]:
-    """Return a usable ffmpeg executable from PATH or imageio-ffmpeg."""
+    """Return a usable ffmpeg executable from static package, PATH or imageio-ffmpeg."""
+    explicit = os.environ.get("PHOTOVAULT_FFMPEG")
+    if explicit and Path(explicit).exists():
+        return explicit
+    static = _static_media_tool("ffmpeg")
+    if static:
+        return static
     system = shutil.which("ffmpeg")
     if system:
         return system
@@ -31,8 +56,11 @@ def ffmpeg_path() -> Optional[str]:
 
 @lru_cache(maxsize=1)
 def ffprobe_path() -> Optional[str]:
-    """Return ffprobe when the system provides it."""
-    return shutil.which("ffprobe")
+    """Return ffprobe from static package or PATH."""
+    explicit = os.environ.get("PHOTOVAULT_FFPROBE")
+    if explicit and Path(explicit).exists():
+        return explicit
+    return _static_media_tool("ffprobe") or shutil.which("ffprobe")
 
 
 def has_ffmpeg() -> bool:
@@ -186,3 +214,89 @@ def exiftool_version() -> Optional[str]:
 
 def has_exiftool() -> bool:
     return exiftool_command() is not None
+
+
+def _first_tool_path(*names: str) -> Optional[str]:
+    for name in names:
+        found = shutil.which(name)
+        if found:
+            return found
+    return None
+
+
+def _tool_entry(label: str, path: Optional[str], required: bool = True,
+                version: Optional[str] = None, detail: str = "") -> dict:
+    ok = bool(path)
+    return {
+        "label": label,
+        "available": ok,
+        "required": required,
+        "path": path or "",
+        "version": version or "",
+        "status": "ok" if ok else ("error" if required else "warning"),
+        "detail": detail,
+    }
+
+
+def _path_entry(label: str, path: Path, required: bool = True) -> dict:
+    exists = path.exists()
+    parent = path if path.is_dir() else path.parent
+    writable = os.access(str(parent), os.W_OK) if parent.exists() else os.access(str(parent.parent), os.W_OK)
+    ok = bool((exists or not required) and writable)
+    return {
+        "label": label,
+        "available": ok,
+        "required": required,
+        "path": str(path),
+        "version": "",
+        "status": "ok" if ok else ("error" if required else "warning"),
+        "detail": "gravavel" if writable else "sem permissao de escrita",
+    }
+
+
+def environment_diagnostics() -> dict:
+    """Return local runtime readiness for the desktop app and dev workflow."""
+    ffmpeg = ffmpeg_path()
+    ffprobe = ffprobe_path()
+    exif_status = exiftool_status()
+    tools = [
+        _tool_entry("Python", sys.executable, version=platform.python_version()),
+        _tool_entry("Node.js", _first_tool_path("node.exe", "node")),
+        _tool_entry("npm", _first_tool_path("npm.cmd", "npm.exe", "npm")),
+        _tool_entry("Cargo", _first_tool_path("cargo.exe", "cargo")),
+        _tool_entry("ffmpeg", ffmpeg, required=False, detail="necessario para previews de video"),
+        _tool_entry("ffprobe", ffprobe, required=False, detail="melhora metadados de video"),
+        _tool_entry(
+            "ExifTool",
+            exif_status.get("path") if exif_status.get("available") else None,
+            required=False,
+            version=exiftool_version(),
+            detail=exif_status.get("reason") or "",
+        ),
+    ]
+    paths = [
+        _path_entry("Config local", CONFIG_DIR, required=False),
+        _path_entry("Banco SQLite", DB_PATH, required=False),
+        _path_entry("Log", get_log_path(), required=False),
+    ]
+    checks = tools + paths
+    required_missing = [item for item in checks if item.get("required") and item.get("status") != "ok"]
+    optional_missing = [item for item in checks if not item.get("required") and item.get("status") != "ok"]
+    status = "ok" if not required_missing else "error"
+    return {
+        "status": status,
+        "summary": (
+            "Ambiente pronto"
+            if status == "ok"
+            else f"{len(required_missing)} requisito(s) obrigatorio(s) ausente(s)"
+        ),
+        "requiredMissing": len(required_missing),
+        "optionalMissing": len(optional_missing),
+        "tools": tools,
+        "paths": paths,
+        "platform": {
+            "system": platform.system(),
+            "release": platform.release(),
+            "machine": platform.machine(),
+        },
+    }

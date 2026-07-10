@@ -10,6 +10,7 @@ def test_ffmpeg_path_uses_imageio_fallback(monkeypatch, tmp_path):
     fake = types.SimpleNamespace(get_ffmpeg_exe=lambda: str(exe))
 
     tools.ffmpeg_path.cache_clear()
+    monkeypatch.setattr(tools, "_static_media_tool", lambda name: None)
     monkeypatch.setattr(tools.shutil, "which", lambda name: None)
     monkeypatch.setitem(sys.modules, "imageio_ffmpeg", fake)
 
@@ -19,8 +20,60 @@ def test_ffmpeg_path_uses_imageio_fallback(monkeypatch, tmp_path):
     tools.ffmpeg_path.cache_clear()
 
 
+def test_static_media_tools_take_precedence(monkeypatch, tmp_path):
+    import core.runtime_tools as tools
+
+    ffmpeg = tmp_path / "ffmpeg.exe"
+    ffprobe = tmp_path / "ffprobe.exe"
+    ffmpeg.write_text("", encoding="utf-8")
+    ffprobe.write_text("", encoding="utf-8")
+
+    def fake_static(name):
+        return str(ffmpeg if name == "ffmpeg" else ffprobe)
+
+    tools.ffmpeg_path.cache_clear()
+    tools.ffprobe_path.cache_clear()
+    monkeypatch.setattr(tools, "_static_media_tool", fake_static)
+    monkeypatch.setattr(tools.shutil, "which", lambda name: None)
+
+    assert tools.ffmpeg_path() == str(ffmpeg)
+    assert tools.ffprobe_path() == str(ffprobe)
+
+    tools.ffmpeg_path.cache_clear()
+    tools.ffprobe_path.cache_clear()
+
+
+def test_explicit_media_tool_env_paths_take_precedence(monkeypatch, tmp_path):
+    import core.runtime_tools as tools
+
+    ffmpeg = tmp_path / "custom-ffmpeg.exe"
+    ffprobe = tmp_path / "custom-ffprobe.exe"
+    ffmpeg.write_text("", encoding="utf-8")
+    ffprobe.write_text("", encoding="utf-8")
+
+    tools.ffmpeg_path.cache_clear()
+    tools.ffprobe_path.cache_clear()
+    monkeypatch.setenv("PHOTOVAULT_FFMPEG", str(ffmpeg))
+    monkeypatch.setenv("PHOTOVAULT_FFPROBE", str(ffprobe))
+    monkeypatch.setattr(tools, "_static_media_tool", lambda name: None)
+    monkeypatch.setattr(tools.shutil, "which", lambda name: None)
+
+    assert tools.ffmpeg_path() == str(ffmpeg)
+    assert tools.ffprobe_path() == str(ffprobe)
+
+    tools.ffmpeg_path.cache_clear()
+    tools.ffprobe_path.cache_clear()
+
+
 def test_ffmpeg_path_returns_none_when_unavailable(monkeypatch):
     import core.runtime_tools as tools
+
+    tools.ffmpeg_path.cache_clear()
+    monkeypatch.setattr(tools, "_static_media_tool", lambda name: None)
+    monkeypatch.setattr(tools.shutil, "which", lambda name: None)
+    monkeypatch.setitem(sys.modules, "imageio_ffmpeg", None)
+
+    assert tools.ffmpeg_path() is None
 
     tools.ffmpeg_path.cache_clear()
 
@@ -65,9 +118,41 @@ def test_exiftool_status_reports_perl_script_without_perl(tmp_path, monkeypatch)
         tools.exiftool_command.cache_clear()
         tools.exiftool_path.cache_clear()
         tools.perl_path.cache_clear()
-    monkeypatch.setattr(tools.shutil, "which", lambda name: None)
-    monkeypatch.setitem(sys.modules, "imageio_ffmpeg", None)
 
-    assert tools.ffmpeg_path() is None
+
+def test_environment_diagnostics_reports_required_and_optional(monkeypatch, tmp_path):
+    import core.runtime_tools as tools
+
+    python = tmp_path / "python.exe"
+    node = tmp_path / "node.exe"
+    npm = tmp_path / "npm.cmd"
+    cargo = tmp_path / "cargo.exe"
+    for exe in (python, node, npm, cargo):
+        exe.write_text("", encoding="utf-8")
+
+    def fake_which(name):
+        mapping = {
+            "node.exe": str(node),
+            "npm.cmd": str(npm),
+            "cargo.exe": str(cargo),
+        }
+        return mapping.get(name)
 
     tools.ffmpeg_path.cache_clear()
+    tools.ffprobe_path.cache_clear()
+    tools.exiftool_command.cache_clear()
+    tools.exiftool_path.cache_clear()
+    tools.perl_path.cache_clear()
+    monkeypatch.setattr(tools, "_static_media_tool", lambda name: None)
+    monkeypatch.setattr(tools.sys, "executable", str(python))
+    monkeypatch.setattr(tools.shutil, "which", fake_which)
+    monkeypatch.setattr(tools, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(tools, "DB_PATH", tmp_path / "database.db")
+    monkeypatch.setattr(tools, "get_log_path", lambda: tmp_path / "photovault.log")
+
+    result = tools.environment_diagnostics()
+
+    assert result["status"] == "ok"
+    assert result["requiredMissing"] == 0
+    assert result["optionalMissing"] >= 1
+    assert {item["label"] for item in result["tools"]} >= {"Python", "Node.js", "npm", "Cargo", "ffmpeg", "ExifTool"}
