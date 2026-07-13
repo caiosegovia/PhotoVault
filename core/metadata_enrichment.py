@@ -144,10 +144,43 @@ def normalize_exiftool_metadata(path: Path, raw: dict) -> dict:
     )
     gps_lat = _parse_float(raw.get("GPSLatitude"))
     gps_lon = _parse_float(raw.get("GPSLongitude"))
-    iso = _parse_int(_first(raw, "ISO", "PhotographicSensitivity"))
-    aperture = _parse_float(_first(raw, "FNumber", "Aperture", "ApertureValue"))
-    shutter_speed = _parse_float(_first(raw, "ExposureTime", "ShutterSpeedValue"))
-    focal_length = _parse_float(_first(raw, "FocalLength", "FocalLengthIn35mmFormat"))
+    iso = _parse_int(_first(
+        raw,
+        "ISO",
+        "PhotographicSensitivity",
+        "QuickTime:ISO",
+        "EXIF:ISO",
+        "Composite:ISO",
+        "CameraISO",
+        "ISOSetting",
+        "AutoISO",
+    ))
+    aperture = _parse_float(_first(
+        raw,
+        "FNumber",
+        "Aperture",
+        "ApertureValue",
+        "QuickTime:FNumber",
+        "EXIF:FNumber",
+        "Composite:Aperture",
+        "CameraFNumber",
+    ))
+    shutter_speed = _parse_float(_first(
+        raw,
+        "ExposureTime",
+        "ShutterSpeedValue",
+        "QuickTime:ExposureTime",
+        "EXIF:ExposureTime",
+        "CameraExposureTime",
+    ))
+    focal_length = _parse_float(_first(
+        raw,
+        "FocalLength",
+        "FocalLengthIn35mmFormat",
+        "QuickTime:FocalLength",
+        "EXIF:FocalLength",
+        "Composite:FocalLength35efl",
+    ))
 
     normalized = {
         "date_taken": date_taken,

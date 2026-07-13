@@ -49,7 +49,6 @@ import "./styles.css";
 type ImportStatus = "ready" | "done" | "running" | "failed";
 type Decision = "import" | "skip" | "review";
 type View = "cockpit" | "gallery" | "import" | "reviews" | "logs";
-type GridMode = "fill" | "contain" | "compact";
 
 type ImportItem = {
   id: number;
@@ -67,11 +66,13 @@ type ImportItem = {
   planId?: number;
 };
 
-type Vault = { id?: number; name: string; path: string; pattern: string };
+type Vault = { id?: number; name: string; path: string; pattern: string; createdAt?: string };
 type Disk = { total: number; used: number; free: number; pending: number };
 
 type Bucket = { label: string; count: number; bytes: string; bytesRaw: number };
-type GalleryBreakdowns = { media: Bucket[]; years: Bucket[]; months: Bucket[]; extensions: Bucket[]; deviceTypes?: Bucket[]; devices?: Bucket[]; cameras?: Bucket[] };
+type TimelineBucket = Bucket & { photos?: number; videos?: number };
+type DuplicateSavings = { count: number; bytes: string; bytesRaw: number };
+type GalleryBreakdowns = { media: Bucket[]; years: Bucket[]; months: Bucket[]; timeline?: TimelineBucket[]; extensions: Bucket[]; deviceTypes?: Bucket[]; devices?: Bucket[]; cameras?: Bucket[] };
 type GalleryState = {
   items: GalleryItem[];
   total: number;
@@ -80,11 +81,16 @@ type GalleryState = {
   withoutDate: number;
   bytes: string;
   bytesTotal: number;
+  photoBytes: string;
+  photoBytesTotal: number;
+  videoBytes: string;
+  videoBytesTotal: number;
   firstDate: string;
   lastDate: string;
   yearCount: number;
   monthCount: number;
   extensionCount: number;
+  duplicateSavings: DuplicateSavings;
   breakdowns: GalleryBreakdowns;
   capabilities?: {
     ffmpegAvailable?: boolean;
@@ -198,11 +204,16 @@ const EMPTY_GALLERY: GalleryState = {
   withoutDate: 0,
   bytes: "0 B",
   bytesTotal: 0,
+  photoBytes: "0 B",
+  photoBytesTotal: 0,
+  videoBytes: "0 B",
+  videoBytesTotal: 0,
   firstDate: "",
   lastDate: "",
   yearCount: 0,
   monthCount: 0,
   extensionCount: 0,
+  duplicateSavings: { count: 0, bytes: "0 B", bytesRaw: 0 },
   breakdowns: { media: [], years: [], months: [], extensions: [], deviceTypes: [], devices: [], cameras: [] },
   capabilities: { ffmpegAvailable: false, exiftoolAvailable: false },
 };
@@ -256,15 +267,6 @@ function readStoredFilter(): GalleryFilter {
     return raw ? { ...DEFAULT_FILTER, ...JSON.parse(raw) } : DEFAULT_FILTER;
   } catch {
     return DEFAULT_FILTER;
-  }
-}
-
-function readStoredGridMode(): GridMode {
-  try {
-    const value = window.localStorage.getItem("photovault.galleryGridMode") as GridMode | null;
-    return value && ["fill", "contain", "compact"].includes(value) ? value : "contain";
-  } catch {
-    return "contain";
   }
 }
 
@@ -459,7 +461,6 @@ function App() {
   const [catalog, setCatalog] = React.useState<AssetCatalog | null>(null);
   const [catalogBusy, setCatalogBusy] = React.useState(false);
   const [filter, setFilter] = React.useState<GalleryFilter>(readStoredFilter);
-  const [gridMode, setGridMode] = React.useState<GridMode>(readStoredGridMode);
   const progressTimerRef = React.useRef<number | null>(null);
   const galleryLoadingRef = React.useRef(false);
 
@@ -485,14 +486,6 @@ function App() {
       // Preferences are best-effort only.
     }
   }, [filter]);
-
-  React.useEffect(() => {
-    try {
-      window.localStorage.setItem("photovault.galleryGridMode", gridMode);
-    } catch {
-      // Preferences are best-effort only.
-    }
-  }, [gridMode]);
 
   React.useEffect(() => {
     if (activeView === "logs") refreshLogs();
@@ -830,9 +823,13 @@ function App() {
     startProgressPolling();
     try {
       await callBridge("execute_import", { planId: selectedImport.planId, verifyMode: "size" });
+      if (gallery.capabilities?.exiftoolAvailable) {
+        setMessage("Importacao concluida. Gerando metadados tecnicos...");
+        await callBridge("enrich_metadata", { limit: 2000 });
+      }
       await loadState(selectedImport.id);
       setActiveView("gallery");
-      setMessage("Importacao executada.");
+      setMessage(gallery.capabilities?.exiftoolAvailable ? "Importacao e metadados concluidos." : "Importacao executada.");
     } catch (error) {
       await loadState(selectedImport.id);
       setMessage(`Erro ao executar importacao: ${String(error)}`);
@@ -992,6 +989,7 @@ function App() {
           <CockpitView
             gallery={gallery}
             vault={vault}
+            disk={disk}
             imports={imports}
             selectedImport={selectedImport}
             duplicateTotal={duplicateTotal}
@@ -1018,7 +1016,6 @@ function App() {
             vault={vault}
             imports={imports}
             filter={filter}
-            gridMode={gridMode}
             items={filteredItems}
             selectedItem={selectedGalleryItem}
             catalog={catalog}
@@ -1027,7 +1024,6 @@ function App() {
             thumbsBusy={thumbsBusy}
             enrichBusy={enrichBusy}
             onFilter={patchFilter}
-            onGridMode={setGridMode}
             onClear={() => setFilter(DEFAULT_FILTER)}
             onSelect={setSelectedGalleryId}
             onRefresh={() => refreshGallery(false)}
@@ -1096,6 +1092,7 @@ function headline(view: View, gallery: GalleryState, selectedImport: ImportItem 
 function CockpitView({
   gallery,
   vault,
+  disk,
   imports,
   selectedImport,
   duplicateTotal,
@@ -1116,6 +1113,7 @@ function CockpitView({
 }: {
   gallery: GalleryState;
   vault: Vault;
+  disk: Disk;
   imports: ImportItem[];
   selectedImport: ImportItem | null;
   duplicateTotal: number;
@@ -1134,6 +1132,17 @@ function CockpitView({
   onDiagnostics: () => void;
   onHealth: () => void;
 }) {
+  const duplicateSavings = gallery.duplicateSavings?.bytesRaw ? gallery.duplicateSavings : {
+    count: duplicateTotal,
+    bytes: "0 B",
+    bytesRaw: 0,
+  };
+  const healthIssues = [
+    errorTotal ? `${formatNumber(errorTotal)} erros` : "",
+    health.metadataPending ? `${formatNumber(health.metadataPending)} metadados` : "",
+    health.withoutDate ? `${formatNumber(health.withoutDate)} sem data` : "",
+    diagnostics.requiredMissing ? `${formatNumber(diagnostics.requiredMissing)} dependencia` : "",
+  ].filter(Boolean);
   const intelligenceGroups = [
     {
       title: "Qualidade do catalogo",
@@ -1163,23 +1172,32 @@ function CockpitView({
 
   return (
     <div className="view-stack">
-      <GalleryIdentity vault={vault} gallery={gallery} />
+      <HealthMiniBar
+        diagnostics={diagnostics}
+        health={health}
+        gallery={gallery}
+        disk={disk}
+        selectedImport={selectedImport}
+        errors={errorTotal}
+        issues={healthIssues}
+        onHealth={onHealth}
+      />
 
-      <section className="overview">
-        <Metric icon={Archive} label="Na galeria" value={formatNumber(gallery.total)} caption={gallery.bytes} />
-        <Metric icon={Camera} label="Fotos" value={formatNumber(gallery.photos)} caption={`${formatNumber(gallery.withoutDate)} sem data`} />
-        <Metric icon={Video} label="Videos" value={formatNumber(gallery.videos)} caption={formatBytes(largeVideoBytes)} />
-        <Metric icon={CalendarDays} label="Periodo" value={dateRangeLabel(gallery)} caption={`${formatNumber(gallery.monthCount)} meses catalogados`} />
-      </section>
-
-      <section className="overview">
-        <Metric icon={HardDrive} label="Peso do acervo" value={gallery.bytes} caption="catalogado no PhotoVault" />
-        <Metric icon={Layers3} label="Agrupadores" value={formatNumber(gallery.extensionCount)} caption={`${formatNumber(gallery.yearCount)} anos | ${formatNumber(gallery.breakdowns.devices?.length ?? 0)} dispositivos`} />
-        <Metric icon={CheckCircle2} label="Duplicatas evitadas" value={formatNumber(duplicateTotal)} caption={`${formatNumber(importedTotal)} novos`} />
-        <Metric icon={Database} label="Importado" value={formatBytes(importedBytesTotal)} caption={`${formatNumber(imports.length)} ciclos registrados`} />
-      </section>
+      <GalleryIdentity vault={vault} gallery={gallery} disk={disk} savings={duplicateSavings} />
 
       <section className="cockpit-grid">
+        <div className="panel span-2">
+          <SectionTitle eyebrow="Na galeria" title="Composicao do acervo permanente" />
+          <GallerySummaryPanel
+            gallery={gallery}
+            imports={imports}
+            duplicateSavings={duplicateSavings}
+            importedBytesTotal={importedBytesTotal}
+            onFilter={onFilter}
+            onView={onView}
+          />
+        </div>
+
         <div className="panel span-2">
           <SectionTitle eyebrow="Inteligencia da galeria" title="Proximas melhores acoes" />
           <div className="insight-groups">
@@ -1194,9 +1212,9 @@ function CockpitView({
           <MediaDistribution items={gallery.breakdowns.media} onPick={(label) => onFilter({ media: label })} />
         </div>
 
-        <div className="panel">
-          <SectionTitle eyebrow="Timeline" title="Meses com mais acervo" />
-          <BarChart items={gallery.breakdowns.months} onPick={(label) => onFilter({ month: label })} />
+        <div className="panel span-3">
+          <SectionTitle eyebrow="Linha do tempo" title="Quando o acervo foi produzido" />
+          <GalleryTimeline items={gallery.breakdowns.timeline ?? gallery.breakdowns.months} onPick={(label) => onFilter({ month: label })} />
         </div>
 
         <div className="panel span-2">
@@ -1211,12 +1229,7 @@ function CockpitView({
 
         <div className="panel">
           <SectionTitle eyebrow="Dispositivo" title="Modelos detectados" />
-          <BarChart items={gallery.breakdowns.devices ?? []} onPick={(label) => onFilter({ device: label, problem: "all" })} />
-        </div>
-
-        <div className="panel">
-          <SectionTitle eyebrow="Captura" title="Cameras catalogadas" />
-          <FacetButtons items={gallery.breakdowns.cameras ?? []} onPick={(label) => onFilter({ camera: label, problem: "all" })} />
+          <DeviceBreakdown items={gallery.breakdowns.devices ?? []} onPick={(label) => onFilter({ device: label, problem: "all" })} />
         </div>
 
         <div className="panel">
@@ -1247,25 +1260,198 @@ function CockpitView({
           </div>
         </div>
 
-        <div className="panel">
-          <SectionTitle eyebrow="Risco operacional" title="Sinais" />
-          <Signal label="Erros acumulados" value={formatNumber(errorTotal)} tone={errorTotal ? "bad" : "good"} />
-          <Signal label="Ultimo plano" value={selectedImport ? statusLabel(selectedImport.status) : "Sem plano"} />
-          <Signal label="Bytes novos" value={formatBytes(importedBytesTotal)} />
-          <Signal label="ffmpeg" value={gallery.capabilities?.ffmpegAvailable ? "Disponivel" : "Ausente"} tone={gallery.capabilities?.ffmpegAvailable ? "good" : "bad"} />
-          <Signal label="ExifTool" value={exiftoolStatusLabel(gallery)} tone={gallery.capabilities?.exiftoolAvailable ? "good" : "bad"} />
-        </div>
-
         <div className="panel span-2">
           <SectionTitle eyebrow="Ambiente" title={diagnosticsStatusLabel(diagnostics)} action="Atualizar" onAction={onDiagnostics} />
           <DiagnosticsPanel diagnostics={diagnostics} />
         </div>
-
-        <div className="panel">
-          <SectionTitle eyebrow="Saude" title="Galeria" action="Atualizar" onAction={onHealth} />
-          <GalleryHealthPanel health={health} onFilter={onFilter} onView={onView} />
-        </div>
       </section>
+    </div>
+  );
+}
+
+function formatDateShort(value?: string) {
+  if (!value) return "-";
+  const date = value.slice(0, 10);
+  const [year, month, day] = date.split("-");
+  return year && month && day ? `${day}/${month}/${year}` : date;
+}
+
+function HealthMiniBar({
+  diagnostics,
+  health,
+  gallery,
+  disk,
+  selectedImport,
+  errors,
+  issues,
+  onHealth,
+}: {
+  diagnostics: DiagnosticsState;
+  health: HealthState;
+  gallery: GalleryState;
+  disk: Disk;
+  selectedImport: ImportItem | null;
+  errors: number;
+  issues: string[];
+  onHealth: () => void;
+}) {
+  const [open, setOpen] = React.useState(false);
+  const freePct = disk.total ? Math.round((disk.free / disk.total) * 100) : 0;
+  const tone = diagnostics.status === "error" || errors || freePct < 10 ? "bad" : issues.length ? "warn" : "good";
+  const summary = issues.length ? issues.slice(0, 3).join(" | ") : "Sem alertas principais";
+  return (
+    <div className="health-minibar-wrap">
+      <button className={`health-minibar ${tone}`} onClick={() => { setOpen((value) => !value); onHealth(); }}>
+        <div>
+          <Gauge size={16} />
+          <strong>Saude da galeria</strong>
+          <span>{summary}</span>
+        </div>
+        <b>{selectedImport ? statusLabel(selectedImport.status) : "Sem job"}</b>
+        <b>{gallery.capabilities?.ffmpegAvailable ? "ffmpeg OK" : "ffmpeg ausente"}</b>
+        <b>{gallery.capabilities?.exiftoolAvailable ? "ExifTool OK" : "ExifTool pendente"}</b>
+        <b>{formatBytes(disk.free)} livres</b>
+        <em>{open ? "Ocultar" : "Detalhar"}</em>
+      </button>
+      {open ? (
+        <div className="health-minibar-detail">
+          <Signal label="Metadados pendentes" value={formatNumber(health.metadataPending || 0)} />
+          <Signal label="Sem data de captura" value={formatNumber(health.withoutDate || 0)} />
+          <Signal label="Erros recentes" value={formatNumber(errors)} />
+          <Signal label="Dependencias" value={diagnostics.requiredMissing ? `${formatNumber(diagnostics.requiredMissing)} pendente(s)` : "OK"} />
+          <Signal label="Espaco livre" value={`${formatBytes(disk.free)} (${freePct}%)`} />
+          <Signal label="Ultimo job" value={selectedImport ? statusLabel(selectedImport.status) : "Sem job ativo"} />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function GallerySummaryPanel({
+  gallery,
+  imports,
+  duplicateSavings,
+  importedBytesTotal,
+  onFilter,
+  onView,
+}: {
+  gallery: GalleryState;
+  imports: ImportItem[];
+  duplicateSavings: DuplicateSavings;
+  importedBytesTotal: number;
+  onFilter: (filter: Partial<GalleryFilter>) => void;
+  onView: (view: View) => void;
+}) {
+  return (
+    <div className="gallery-summary-panel">
+      <div className="summary-pill-grid">
+        <SummaryPill icon={Camera} label="Fotos" value={formatNumber(gallery.photos)} detail={gallery.photoBytes || "0 B"} onClick={() => onFilter({ media: "photo" })} />
+        <SummaryPill icon={Video} label="Videos" value={formatNumber(gallery.videos)} detail={gallery.videoBytes || "0 B"} onClick={() => onFilter({ media: "video" })} />
+        <SummaryPill icon={CalendarDays} label="Periodo" value={dateRangeLabel(gallery)} detail={`${formatNumber(gallery.monthCount)} meses ativos`} />
+        <SummaryPill icon={CheckCircle2} label="Duplicatas evitadas" value={formatNumber(duplicateSavings.count)} detail={duplicateSavings.bytes} />
+        <SummaryPill icon={Database} label="Importado" value={formatBytes(importedBytesTotal)} detail={`${formatNumber(imports.length)} ciclos registrados`} onClick={() => onView("reviews")} />
+      </div>
+      <ArchiveOrganization gallery={gallery} />
+    </div>
+  );
+}
+
+function SummaryPill({ icon: Icon, label, value, detail, onClick }: { icon: React.ElementType; label: string; value: string; detail: string; onClick?: () => void }) {
+  const content = (
+    <>
+      <Icon size={16} />
+      <span>{label}</span>
+      <strong>{value}</strong>
+      <em>{detail}</em>
+    </>
+  );
+  if (onClick) return <button className="summary-pill" onClick={onClick}>{content}</button>;
+  return <div className="summary-pill">{content}</div>;
+}
+
+function ArchiveOrganization({ gallery }: { gallery: GalleryState }) {
+  const topYear = [...gallery.breakdowns.years].sort((a, b) => b.bytesRaw - a.bytesRaw)[0];
+  const topExtension = [...gallery.breakdowns.extensions].sort((a, b) => b.bytesRaw - a.bytesRaw)[0];
+  const topDevice = [...(gallery.breakdowns.devices ?? [])].sort((a, b) => b.count - a.count)[0];
+  const classes = gallery.breakdowns.deviceTypes?.length ?? 0;
+  return (
+    <div className="archive-organization">
+      <div className="org-heading">
+        <Layers3 size={16} />
+        <div>
+          <strong>Organizacao do acervo</strong>
+          <span>{formatNumber(gallery.yearCount)} anos | {formatNumber(gallery.monthCount)} meses | {formatNumber(gallery.extensionCount)} formatos | {formatNumber(gallery.breakdowns.devices?.length ?? 0)} dispositivos | {formatNumber(classes)} classes</span>
+        </div>
+      </div>
+      <div className="org-highlights">
+        <Signal label="Maior ano" value={topYear ? `${topYear.label} | ${topYear.bytes}` : "-"} />
+        <Signal label="Maior formato" value={topExtension ? `${topExtension.label} | ${topExtension.bytes}` : "-"} />
+        <Signal label="Dispositivo lider" value={topDevice ? `${topDevice.label} | ${formatNumber(topDevice.count)}` : "-"} />
+      </div>
+    </div>
+  );
+}
+
+function GalleryTimeline({ items, onPick }: { items: TimelineBucket[]; onPick: (label: string) => void }) {
+  const months = items.filter((item) => item.label && item.label !== "Sem data");
+  const maxBytes = Math.max(...months.map((item) => item.bytesRaw), 0);
+  const maxCount = Math.max(...months.map((item) => item.count), 0);
+  const first = months[0]?.label ?? "-";
+  const last = months[months.length - 1]?.label ?? "-";
+  return (
+    <div className="gallery-timeline">
+      <div className="timeline-headline">
+        <strong>{`${first} -> ${last}`}</strong>
+        <span>{formatNumber(months.length)} meses com midia | barras por volume, linha por quantidade</span>
+      </div>
+      <div className="timeline-axis">
+        {months.map((item) => {
+          const byteHeight = maxBytes ? Math.max(10, Math.round((item.bytesRaw / maxBytes) * 92)) : 10;
+          const countHeight = maxCount ? Math.max(8, Math.round((item.count / maxCount) * 70)) : 8;
+          return (
+            <button key={item.label} onClick={() => onPick(item.label)} title={`${item.label}: ${formatNumber(item.count)} arquivos, ${item.bytes}`}>
+              <i style={{ height: byteHeight }} />
+              <b style={{ height: countHeight }} />
+              <span>{item.label.slice(5)}</span>
+            </button>
+          );
+        })}
+        {!months.length ? <EmptyState text="Sem datas catalogadas ainda." /> : null}
+      </div>
+      <div className="timeline-summary">
+        {months.slice(-3).map((item) => (
+          <Signal key={item.label} label={item.label} value={`${formatNumber(item.count)} arquivos | ${item.bytes}`} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function deviceIconFor(label: string) {
+  const value = label.toLowerCase();
+  if (value.includes("dji") || value.includes("drone")) return Gauge;
+  if (value.includes("iphone") || value.includes("samsung") || value.includes("sm-")) return Images;
+  if (value.includes("adobe") || value.includes("lightroom")) return Sparkles;
+  return Camera;
+}
+
+function DeviceBreakdown({ items, onPick }: { items: Bucket[]; onPick: (label: string) => void }) {
+  const max = Math.max(...items.map((item) => item.count), 1);
+  return (
+    <div className="device-breakdown">
+      {items.map((item) => {
+        const Icon = deviceIconFor(item.label);
+        const pct = Math.max(5, Math.round((item.count / max) * 100));
+        return (
+          <button key={item.label} onClick={() => onPick(item.label)}>
+            <Icon size={15} />
+            <span>{item.label}</span>
+            <strong>{formatNumber(item.count)}</strong>
+            <i><b style={{ width: `${pct}%` }} /></i>
+          </button>
+        );
+      })}
+      {!items.length ? <EmptyState text="Sem dispositivos detectados." /> : null}
     </div>
   );
 }
@@ -1275,7 +1461,6 @@ function GalleryView({
   vault,
   imports,
   filter,
-  gridMode,
   items,
   selectedItem,
   catalog,
@@ -1284,7 +1469,6 @@ function GalleryView({
   thumbsBusy,
   enrichBusy,
   onFilter,
-  onGridMode,
   onClear,
   onSelect,
   onRefresh,
@@ -1299,7 +1483,6 @@ function GalleryView({
   vault: Vault;
   imports: ImportItem[];
   filter: GalleryFilter;
-  gridMode: GridMode;
   items: GalleryItem[];
   selectedItem: GalleryItem | null;
   catalog: AssetCatalog | null;
@@ -1308,7 +1491,6 @@ function GalleryView({
   thumbsBusy: boolean;
   enrichBusy: boolean;
   onFilter: (filter: Partial<GalleryFilter>) => void;
-  onGridMode: (mode: GridMode) => void;
   onClear: () => void;
   onSelect: (id: number) => void;
   onRefresh: () => void;
@@ -1431,11 +1613,7 @@ function GalleryView({
           </div>
           <div>
             <button className="ghost" onClick={onRefresh} disabled={galleryBusy}>Atualizar</button>
-            <div className="segmented-control" aria-label="Modo da grade">
-              <button className={gridMode === "fill" ? "active" : ""} onClick={() => onGridMode("fill")}>Preencher</button>
-              <button className={gridMode === "contain" ? "active" : ""} onClick={() => onGridMode("contain")}>Inteira</button>
-              <button className={gridMode === "compact" ? "active" : ""} onClick={() => onGridMode("compact")}>Compacta</button>
-            </div>
+            <span className="view-mode-pill"><ListChecks size={14} /> Explorer</span>
             <button className="primary" onClick={onHydrate} disabled={galleryBusy || thumbsBusy}><Images size={16} /> {thumbsBusy ? "Gerando..." : "Previews"}</button>
             <button className="primary" onClick={onEnrich} disabled={enrichBusy || !gallery.total}><Sparkles size={16} /> {enrichBusy ? "Lendo..." : "Metadados"}</button>
           </div>
@@ -1446,8 +1624,15 @@ function GalleryView({
             <button className="ghost" onClick={() => onFilter({ month: "all" })}>Limpar mes</button>
           </div>
         ) : null}
-        <div className={`media-grid grid-${gridMode}`}>
-          {visibleItems.map((item) => <MediaTile key={item.id} item={item} mode={gridMode} selected={selectedItem?.id === item.id} onClick={() => onSelect(item.id)} />)}
+        <div className="media-explorer">
+          <div className="media-explorer-head">
+            <span>Arquivo</span>
+            <span>Captura</span>
+            <span>Origem</span>
+            <span>Tamanho</span>
+            <span>Status</span>
+          </div>
+          {visibleItems.map((item) => <MediaRow key={item.id} item={item} selected={selectedItem?.id === item.id} onClick={() => onSelect(item.id)} />)}
           {!items.length ? <EmptyState text={galleryBusy ? "Carregando galeria..." : "Nenhum item bate com os filtros atuais."} /> : null}
         </div>
         {hasMoreItems ? (
@@ -1709,7 +1894,19 @@ function dateRangeLabel(gallery: GalleryState) {
   return `${gallery.firstDate?.slice(0, 4) || "?"}-${gallery.lastDate?.slice(0, 4) || "?"}`;
 }
 
-function GalleryIdentity({ vault, gallery, compact = false }: { vault: Vault; gallery: GalleryState; compact?: boolean }) {
+function GalleryIdentity({
+  vault,
+  gallery,
+  disk,
+  savings,
+  compact = false,
+}: {
+  vault: Vault;
+  gallery: GalleryState;
+  disk?: Disk;
+  savings?: DuplicateSavings;
+  compact?: boolean;
+}) {
   return (
     <section className={compact ? "gallery-identity compact" : "gallery-identity"}>
       <div>
@@ -1721,6 +1918,9 @@ function GalleryIdentity({ vault, gallery, compact = false }: { vault: Vault; ga
         <BigNumber label="Acervo" value={gallery.bytes} detail={`${formatNumber(gallery.total)} arquivos`} />
         <BigNumber label="Midias" value={`${formatNumber(gallery.photos + gallery.videos)}`} detail={`${formatNumber(gallery.photos)} fotos | ${formatNumber(gallery.videos)} videos`} />
         <BigNumber label="Periodo" value={dateRangeLabel(gallery)} detail={`${formatNumber(gallery.monthCount)} meses`} />
+        {!compact ? <BigNumber label="Disponivel" value={formatBytes(disk?.free ?? 0)} detail="livre no disco da galeria" /> : null}
+        {!compact ? <BigNumber label="Criada em" value={formatDateShort(vault.createdAt)} detail="data de criacao do vault" /> : null}
+        {!compact ? <BigNumber label="Economia" value={savings?.bytes ?? "0 B"} detail={`${formatNumber(savings?.count ?? 0)} duplicatas evitadas`} /> : null}
       </div>
     </section>
   );
@@ -2166,33 +2366,26 @@ function Chip({ active, children, onClick }: { active: boolean; children: React.
   return <button className={active ? "chip active" : "chip"} onClick={onClick}>{children}</button>;
 }
 
-function aspectRatioForItem(item: GalleryItem) {
-  const [w, h] = String(item.resolution || "").split("x").map((value) => Number(value));
-  if (Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0) {
-    const ratio = Math.max(0.55, Math.min(w / h, 2.2));
-    return `${ratio}`;
-  }
-  if (isVideo(item)) return "1.777";
-  return "1.5";
-}
-
-function MediaTile({ item, mode, selected, onClick }: { item: GalleryItem; mode: GridMode; selected: boolean; onClick: () => void }) {
+function MediaRow({ item, selected, onClick }: { item: GalleryItem; selected: boolean; onClick: () => void }) {
   const previewLabel = item.previewStatus === "placeholder" ? "placeholder" : item.previewStatus === "missing" ? "sem preview" : "preview";
+  const Icon = isVideo(item) ? Film : Camera;
   return (
-    <button className={`media-tile ${selected ? "active" : ""} mode-${mode}`} onClick={onClick} title={item.path}>
-      <div className="tile-image" style={{ aspectRatio: mode === "contain" ? aspectRatioForItem(item) : undefined }}>
-        <SmartImage path={item.thumbnail} status={item.previewStatus} alt={item.name} icon={isVideo(item) ? Film : Camera} />
-        <span>{isVideo(item) ? <Film size={13} /> : <Camera size={13} />}</span>
+    <button className={`media-row ${selected ? "active" : ""}`} onClick={onClick} title={item.path}>
+      <div className="media-row-file">
+        <span className={isVideo(item) ? "media-row-icon video" : "media-row-icon photo"}><Icon size={17} /></span>
+        <div>
+          <strong>{item.name}</strong>
+          <em>{item.mediaType} {normalizeExtension(item.extension).toUpperCase() || "MIDIA"} | {item.resolution}</em>
+        </div>
       </div>
-      <div className="tile-badges">
+      <span>{item.date || "sem data"}</span>
+      <span>{item.deviceName || "Desconhecido"}</span>
+      <span>{item.size}</span>
+      <div className="media-row-badges">
         <b>{normalizeExtension(item.extension).toUpperCase() || "MIDIA"}</b>
         {isRaw(item) ? <b>RAW</b> : null}
         {item.metadataSource === "ExifTool" ? <b>EXIF</b> : null}
-      </div>
-      <div className="tile-meta">
-        <em>{item.mediaType} {item.extension} | {previewLabel}</em>
-        <strong>{item.name}</strong>
-        <p>{item.date || "sem data"} | {item.size}</p>
+        <b className={item.previewStatus === "ready" ? "ok" : ""}>{previewLabel}</b>
       </div>
     </button>
   );

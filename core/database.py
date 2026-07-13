@@ -1637,6 +1637,8 @@ def gallery_totals() -> dict:
                    COALESCE(SUM(a.size), 0) AS bytes_total,
                    SUM(CASE WHEN a.media_type = 'photo' THEN 1 ELSE 0 END) AS photos,
                    SUM(CASE WHEN a.media_type = 'video' THEN 1 ELSE 0 END) AS videos,
+                   COALESCE(SUM(CASE WHEN a.media_type = 'photo' THEN a.size ELSE 0 END), 0) AS photo_bytes,
+                   COALESCE(SUM(CASE WHEN a.media_type = 'video' THEN a.size ELSE 0 END), 0) AS video_bytes,
                    SUM(CASE WHEN a.date_taken IS NULL THEN 1 ELSE 0 END) AS without_date,
                    MIN(a.date_taken) AS first_date,
                    MAX(a.date_taken) AS last_date,
@@ -1652,6 +1654,8 @@ def gallery_totals() -> dict:
         'bytes_total': row['bytes_total'] or 0,
         'photos': row['photos'] or 0,
         'videos': row['videos'] or 0,
+        'photo_bytes': row['photo_bytes'] or 0,
+        'video_bytes': row['video_bytes'] or 0,
         'without_date': row['without_date'] or 0,
         'first_date': row['first_date'],
         'last_date': row['last_date'],
@@ -1659,6 +1663,46 @@ def gallery_totals() -> dict:
         'month_count': row['month_count'] or 0,
         'extension_count': row['extension_count'] or 0,
     }
+
+
+def duplicate_savings_total() -> dict:
+    """Return cumulative storage avoided by duplicate decisions."""
+    with _get_conn() as conn:
+        row = conn.execute(
+            """SELECT COUNT(*) AS duplicate_count,
+                      COALESCE(SUM(size), 0) AS duplicate_bytes
+               FROM import_files
+               WHERE reason IN (
+                   'exact_duplicate_in_plan',
+                   'exact_duplicate_in_vault',
+                   'known_asset_in_vault'
+               )
+                 AND status IN ('skipped', 'done')"""
+        ).fetchone()
+    return {
+        'count': row['duplicate_count'] or 0,
+        'bytes': row['duplicate_bytes'] or 0,
+    }
+
+
+def gallery_month_timeline(limit: int = 120) -> list[dict]:
+    """Return chronological monthly gallery production buckets."""
+    with _get_conn() as conn:
+        rows = conn.execute(
+            """SELECT COALESCE(strftime('%Y-%m', a.date_taken), 'Sem data') AS label,
+                      COUNT(*) AS count,
+                      SUM(CASE WHEN a.media_type = 'photo' THEN 1 ELSE 0 END) AS photos,
+                      SUM(CASE WHEN a.media_type = 'video' THEN 1 ELSE 0 END) AS videos,
+                      COALESCE(SUM(a.size), 0) AS bytes
+               FROM asset_instances ai
+               JOIN assets a ON a.id = ai.asset_id
+               WHERE ai.role = 'destination'
+               GROUP BY label
+               ORDER BY label ASC
+               LIMIT ?""",
+            (limit,),
+        ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def gallery_breakdowns(limit: int = 8) -> dict:

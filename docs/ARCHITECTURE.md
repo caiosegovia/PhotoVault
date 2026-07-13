@@ -179,19 +179,19 @@ erDiagram
 | Auditoria | `audit_events` |
 | Legado/compatibilidade | `files`, `sources`, `scan_jobs`, `sessions`, `destination_index` |
 
-## Galeria E Facetas
+## Galeria Explorer E Facetas
 
 `bridge.gallery` monta:
 
-- totais: total, fotos, videos, sem data, bytes, primeira/ultima data;
-- facetas persistidas: midia, anos, meses, extensoes, devices, deviceTypes, cameras;
+- totais: total, fotos, videos, bytes por tipo, economia por duplicatas, sem data, primeira/ultima data;
+- facetas persistidas: midia, anos, meses, timeline cronologica, extensoes, devices, deviceTypes, cameras;
 - itens: path, thumbnail, previewStatus, mediaType, extensao, tamanho, data, resolucao, dispositivo, camera, lente, software, GPS, codec, bitrate, exposicao e origem dos metadados;
 - capacidades: ffmpeg, ExifTool, versao/status;
 - processamento: resumo da fila de ExifTool.
 
 No frontend, `galleryFilters.ts` aplica filtros locais por query, midia, extensao, ano, mes, tamanho, problema, deviceType, device, camera e lens.
 
-A grade renderiza os resultados filtrados em lotes incrementais de 240 itens. Quando a busca textual tem pelo menos dois caracteres, a UI chama `search_gallery`, que usa `catalog_search` FTS5 com fallback `LIKE`.
+A Galeria usa uma visualizacao Explorer textual: cada linha mostra nome, tipo/extensao/resolucao, data, dispositivo, tamanho e badges de preview/metadados. O preview visual fica no inspetor lateral quando um item e selecionado. A lista renderiza os resultados filtrados em lotes incrementais de 240 itens. Quando a busca textual tem pelo menos dois caracteres, a UI chama `search_gallery`, que usa `catalog_search` FTS5 com fallback `LIKE`.
 
 Tags e notas sao salvas em `catalog_tags`, `asset_tags` e `catalog_notes`, e entram no indice textual por `refresh_catalog_search_conn`.
 
@@ -199,10 +199,12 @@ Tags e notas sao salvas em `catalog_tags`, `asset_tags` e `catalog_notes`, e ent
 
 ```mermaid
 flowchart TB
-    Gallery["Usuario abre Galeria"] --> Payload["bridge.gallery"]
+    Gallery["Usuario abre Galeria Explorer"] --> Payload["bridge.gallery"]
     Payload --> Backfill["backfill_catalog_metadata_from_gallery"]
     Payload --> Items["list_gallery_assets"]
     Items --> Cached["get_cached_thumbnail"]
+    Gallery --> Inspector["Selecao abre preview lateral"]
+    Inspector --> Cached
     Gallery --> Ensure["Botao Previews"]
     Ensure --> Thumb["ensure_thumbnail"]
     Thumb --> Photo["Pillow para fotos/RAW suportados"]
@@ -226,13 +228,13 @@ Views principais em `frontend/src/main.tsx`:
 | View | Papel |
 |---|---|
 | `cockpit` | Visao operacional da galeria, imports, storage, facetas e sinais. |
-| `gallery` | Grade de midias, filtros, metadados e acoes de abrir/localizar. |
+| `gallery` | Lista Explorer textual, filtros, preview lateral, metadados e acoes de abrir/localizar. |
 | `import` | Configura vault/origem, analisa e executa plano. |
 | `reviews` | Revisao de grupos de decisao por motivo. |
 | `logs` | Tail de logs locais. |
 
 O Cockpit tambem mostra um painel de ambiente alimentado por `diagnostics`, incluindo requisitos obrigatorios de desenvolvimento e ferramentas opcionais para previews/metadados.
-O Cockpit mostra tambem Saude da Galeria: metadados pendentes, itens sem data, videos grandes, imports retomaveis e insights deterministicas sem modelo externo.
+O Cockpit mostra tambem uma minibar de Saude da Galeria: metadados pendentes, itens sem data, erros recentes, dependencias, espaco livre, imports retomaveis e insights deterministicas sem modelo externo. A composicao "Na Galeria" agrupa fotos/videos, periodo, importado, duplicatas evitadas e organizacao do acervo.
 
 Estados principais:
 
@@ -275,7 +277,7 @@ Arquivos locais:
   database.db
   progress.json
   photovault.log
-  thumbs\
+  thumbs\                         # cache versionado de previews
 ```
 
 Metricas de copia registradas:

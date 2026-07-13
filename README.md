@@ -15,15 +15,15 @@ O fluxo funcional cobre:
 - revisar decisoes por grupos acionaveis antes de copiar;
 - copiar com staging, verificacao por tamanho e metricas de tempo/MB/s;
 - registrar operacoes, instancias fisicas, imports e eventos de auditoria em SQLite;
-- gerar thumbnails de fotos, RAW suportados e frames de video;
+- gerar thumbnails versionados de fotos, RAW suportados e frames de video para o painel de detalhe;
 - enriquecer metadados com ExifTool opcional instalado no sistema;
-- navegar pela galeria com filtros por texto, tipo, ano, mes, extensao, tamanho, dispositivo, camera, lente e problemas;
+- navegar pela galeria em modo Explorer textual, com filtros por texto, tipo, ano, mes, extensao, tamanho, dispositivo, camera, lente e problemas;
 - buscar no catalogo usando FTS5 do SQLite quando ha texto de busca;
-- renderizar a grade da galeria em lotes incrementais para manter a UI responsiva;
+- renderizar a lista Explorer da galeria em lotes incrementais para manter a UI responsiva;
 - registrar tags e notas de curadoria por asset;
-- acompanhar saude da galeria, imports retomaveis e insights deterministicas no Cockpit;
+- acompanhar saude da galeria em minibar clicavel, imports retomaveis e insights deterministicas no Cockpit;
 - abrir ou localizar arquivos no Explorer;
-- visualizar cockpit com composicao da galeria, storage, imports recentes, timeline, facetas e sinais operacionais;
+- visualizar Cockpit com composicao da galeria, storage disponivel, economia por duplicatas, importacoes recentes, timeline real, facetas e sinais operacionais;
 - diagnosticar ambiente local: Python, Node/npm, Cargo, ffmpeg, ffprobe, ExifTool e paths do app;
 - acompanhar progresso e logs em `%USERPROFILE%\.photovault`.
 
@@ -41,7 +41,7 @@ Build de release para teste em outro Windows:
 frontend\src-tauri\target\release\bundle\
 ```
 
-O release usa `frontend\src-tauri\resources\photovault-bridge.exe` como bridge Python empacotada por PyInstaller e inclui `ffmpeg`, `ffprobe` e ExifTool como recursos do instalador de teste. Veja `docs/RELEASE.md` para gerar os sidecars antes de compilar o instalador.
+O release usa `frontend\src-tauri\resources\photovault-bridge.exe` como bridge Python empacotada por PyInstaller e inclui `ffmpeg`/`ffprobe` como recursos do instalador de teste. ExifTool deve vir de uma instalacao externa confiavel no PATH; o projeto nao deve baixar ou embutir executavel suspeito. Veja `docs/RELEASE.md` para gerar os sidecars antes de compilar o instalador.
 
 Para reconstruir:
 
@@ -60,9 +60,11 @@ npx.cmd tauri build --debug --no-bundle
 4. Rode a analise.
 5. Revise os grupos de decisao.
 6. Execute o plano.
-7. Abra a Galeria e gere/atualize previews.
-8. Use o Cockpit para entender volume, formatos, timeline, dispositivos e riscos.
-9. Rode enriquecimento de metadados quando ExifTool estiver disponivel.
+7. Abra a Galeria em modo Explorer textual.
+8. Selecione itens para ver preview e metadados no painel lateral.
+9. Gere/atualize previews quando quiser enriquecer o painel de detalhe.
+10. Use o Cockpit para entender volume, formatos, timeline, dispositivos, saude e riscos.
+11. Rode enriquecimento de metadados quando ExifTool estiver disponivel.
 
 ## Arquitetura Em Uma Tela
 
@@ -109,7 +111,7 @@ PhotoVault/
     metadata_enrichment.py          # enriquecimento retroativo com ExifTool opcional
     runtime_tools.py                # descoberta de ffmpeg, ffprobe, perl e exiftool
     safety.py                       # validacoes de caminho e reset
-    thumbnail_cache.py              # cache de previews
+    thumbnail_cache.py              # cache versionado de previews
     vault.py                        # paths canonicos do vault
     organizer.py                    # fluxo antigo/auxiliar ainda coberto por testes
     scanner.py                      # scan generico ainda coberto por testes
@@ -137,7 +139,7 @@ Comandos ativos:
 | `import_insights` | Retorna grupos de decisao do import selecionado. |
 | `update_decision_group` | Persiste decisao em lote por motivo. |
 | `execute_import` | Executa o plano de ingestao com staging e metricas. |
-| `gallery` | Lista itens e facetas da galeria; opcionalmente gera thumbnails. |
+| `gallery` | Lista itens, facetas, timeline, totais e capacidades da galeria; opcionalmente gera thumbnails. |
 | `search_gallery` | Busca itens no catalogo via FTS5/SQLite. |
 | `enrich_metadata` | Roda enriquecimento retroativo via ExifTool quando disponivel. |
 | `health` | Retorna saude operacional, imports retomaveis, jobs e insights. |
@@ -181,7 +183,7 @@ Essa base prepara o app para consultas ricas e um agente de insights no futuro: 
   database.db
   progress.json
   photovault.log
-  thumbs\
+  thumbs\                         # cache versionado de previews
 ```
 
 O reset local do app limpa o estado do PhotoVault, mas nao apaga a galeria fisica do vault.
@@ -276,13 +278,16 @@ A suite atual cobre:
 - O enriquecimento retroativo com ExifTool e opcional e nao bloqueante.
 - Binarios embutidos do ExifTool foram removidos do pacote Tauri.
 - O Cockpit passou a mostrar diagnostico de ambiente via bridge.
-- A galeria passou a usar busca FTS5 para texto, renderizacao incremental, tags/notas e painel de saude.
+- A galeria passou a usar busca FTS5 para texto, visualizacao Explorer incremental, tags/notas e painel de saude.
+- A grade visual de cards foi substituida por lista Explorer textual; previews ficam no painel lateral sob selecao.
+- O cache de thumbnails passou a ser versionado para evitar reaproveitar previews antigos com regra visual defasada.
+- O Cockpit foi remodelado com minibar de saude, quadrante "Na Galeria", timeline real, organizacao do acervo e economia acumulada por duplicatas evitadas.
 
 ## Pendencias Conhecidas
 
 - O catalogo ja tem base para IA/agente, mas ainda nao chama modelos externos.
 - As facetas de camera dependem de metadados realmente extraidos; imports antigos podem aparecer como `Desconhecido` ate receberem enriquecimento.
-- A grade da galeria ja renderiza em lotes, mas a consulta ainda carrega um limite alto em memoria; paginacao SQLite continua como prioridade.
+- A lista Explorer da galeria ja renderiza em lotes, mas a consulta ainda carrega um limite alto em memoria; paginacao SQLite continua como prioridade.
 - Jobs longos ainda rodam como chamadas bridge sincrona disparadas pelo Tauri; ja existe base de `background_jobs`, mas workers retomaveis completos ainda sao evolucao futura.
 
 ## Licenca

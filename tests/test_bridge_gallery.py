@@ -11,6 +11,8 @@ def test_gallery_payload_lists_assets_once_after_backfill(monkeypatch):
         'videos': 0,
         'without_date': 0,
         'bytes_total': 123,
+        'photo_bytes': 123,
+        'video_bytes': 0,
         'first_date': '2024-01-01T10:00:00',
         'last_date': '2024-01-01T10:00:00',
         'year_count': 1,
@@ -26,6 +28,8 @@ def test_gallery_payload_lists_assets_once_after_backfill(monkeypatch):
         'deviceTypes': [],
         'cameras': [],
     })
+    monkeypatch.setattr(bridge, 'duplicate_savings_total', lambda: {'count': 0, 'bytes': 0})
+    monkeypatch.setattr(bridge, 'gallery_month_timeline', lambda: [])
     monkeypatch.setattr(bridge, 'get_cached_thumbnail', lambda _path: None)
     monkeypatch.setattr(bridge, 'has_ffmpeg', lambda: False)
     monkeypatch.setattr(bridge, 'has_exiftool', lambda: False)
@@ -74,6 +78,8 @@ def test_state_returns_gallery_summary_without_loading_items(monkeypatch):
         'videos': 5000,
         'without_date': 3,
         'bytes_total': 999,
+        'photo_bytes': 800,
+        'video_bytes': 199,
         'first_date': None,
         'last_date': None,
         'year_count': 4,
@@ -89,6 +95,8 @@ def test_state_returns_gallery_summary_without_loading_items(monkeypatch):
         'deviceTypes': [],
         'cameras': [],
     })
+    monkeypatch.setattr(bridge, 'duplicate_savings_total', lambda: {'count': 2, 'bytes': 100})
+    monkeypatch.setattr(bridge, 'gallery_month_timeline', lambda: [])
     monkeypatch.setattr(bridge, 'list_gallery_assets', lambda _limit: (_ for _ in ()).throw(AssertionError('assets should not load')))
     monkeypatch.setattr(bridge, 'has_ffmpeg', lambda: False)
     monkeypatch.setattr(bridge, 'has_exiftool', lambda: False)
@@ -123,6 +131,8 @@ def test_gallery_payload_can_hydrate_thumbnails_in_same_pass(tmp_path, monkeypat
         'videos': 0,
         'without_date': 0,
         'bytes_total': 5,
+        'photo_bytes': 5,
+        'video_bytes': 0,
         'first_date': None,
         'last_date': None,
         'year_count': 0,
@@ -138,6 +148,8 @@ def test_gallery_payload_can_hydrate_thumbnails_in_same_pass(tmp_path, monkeypat
         'deviceTypes': [],
         'cameras': [],
     })
+    monkeypatch.setattr(bridge, 'duplicate_savings_total', lambda: {'count': 0, 'bytes': 0})
+    monkeypatch.setattr(bridge, 'gallery_month_timeline', lambda: [])
     monkeypatch.setattr(bridge, 'list_gallery_assets', lambda _limit: [{
         'instance_id': 8,
         'asset_id': 12,

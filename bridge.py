@@ -10,8 +10,10 @@ from core.database import (
     add_catalog_note,
     backfill_catalog_metadata_from_gallery,
     gallery_breakdowns,
+    gallery_month_timeline,
     gallery_health,
     gallery_totals,
+    duplicate_savings_total,
     get_asset_catalog,
     get_import_files,
     get_latest_vault,
@@ -289,6 +291,7 @@ def _gallery_payload(
     totals_at = time.perf_counter()
     breakdowns = gallery_breakdowns()
     breakdowns_at = time.perf_counter()
+    duplicate_savings = duplicate_savings_total()
     assets = list_gallery_assets(limit) if include_items else []
     assets_at = time.perf_counter()
     items = _gallery_items(assets, ensure_thumbnails=ensure_thumbnails) if include_items else []
@@ -301,15 +304,28 @@ def _gallery_payload(
         'withoutDate': gallery_total['without_date'],
         'bytes': format_size(gallery_total['bytes_total']),
         'bytesTotal': gallery_total['bytes_total'],
+        'photoBytes': format_size(gallery_total.get('photo_bytes') or 0),
+        'photoBytesTotal': gallery_total.get('photo_bytes') or 0,
+        'videoBytes': format_size(gallery_total.get('video_bytes') or 0),
+        'videoBytesTotal': gallery_total.get('video_bytes') or 0,
         'firstDate': (gallery_total.get('first_date') or '')[:10],
         'lastDate': (gallery_total.get('last_date') or '')[:10],
         'yearCount': gallery_total.get('year_count') or 0,
         'monthCount': gallery_total.get('month_count') or 0,
         'extensionCount': gallery_total.get('extension_count') or 0,
+        'duplicateSavings': {
+            'count': duplicate_savings['count'],
+            'bytes': format_size(duplicate_savings['bytes']),
+            'bytesRaw': duplicate_savings['bytes'],
+        },
         'breakdowns': {
             'media': [_bucket(row) for row in breakdowns['media']],
             'years': [_bucket(row) for row in breakdowns['years']],
             'months': [_bucket(row) for row in breakdowns['months']],
+            'timeline': [_bucket(row) | {
+                'photos': row.get('photos') or 0,
+                'videos': row.get('videos') or 0,
+            } for row in gallery_month_timeline()],
             'extensions': [_bucket(row) for row in breakdowns['extensions']],
             'devices': [_bucket(row) for row in breakdowns.get('devices', [])],
             'deviceTypes': [_bucket(row) for row in breakdowns.get('deviceTypes', [])],
@@ -388,6 +404,7 @@ def state(_payload: dict) -> dict:
             'name': vault['label'] if vault else 'Galeria PhotoVault',
             'path': vault_path,
             'pattern': vault['pattern'] if vault else '{year}/{month:02d}',
+            'createdAt': (vault['created_at'] or '') if vault else '',
         },
         'imports': imports,
         'files': files,

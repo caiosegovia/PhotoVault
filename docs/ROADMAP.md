@@ -43,13 +43,13 @@ Implementado:
 
 ### 4. Paginacao ou virtualizacao da galeria
 
-Status: curto prazo implementado no frontend com renderizacao incremental da grade. Ainda falta mover filtros/paginacao para SQLite.
+Status: curto prazo implementado no frontend com renderizacao incremental da lista Explorer. Ainda falta mover filtros/paginacao para SQLite.
 
 Problema: `GALLERY_ITEM_LIMIT` chega a 50000 itens e a UI filtra localmente.
 
 Implementado:
 
-- renderizacao inicial limitada a 240 cards;
+- renderizacao inicial limitada a 240 linhas;
 - botao para carregar mais resultados filtrados sem redesenhar todos os itens de uma vez.
 
 Proximos passos:
@@ -269,32 +269,40 @@ Impacto:
 - base para compartilhar fora do ambiente dev.
 - experiencia desktop mais limpa, sem terminal residual atras da janela principal.
 
-### 16. UX da grade por proporcao real
+### 16. UX da Galeria Explorer
 
-Status: implementado na primeira versao com modos de grade `Preencher`, `Inteira` e `Compacta`.
+Status: implementado com lista Explorer textual e preview lateral sob selecao.
 
-Problema: os cards da Galeria hoje usam area visual quadrada/fechada, o que favorece consistencia da grade, mas pode cortar ou esconder composicao real. Fotos de camera costumam ser 4:3 ou 3:2; videos e drones frequentemente sao 16:9; celulares podem aparecer em 9:16; panoramas e exports tambem variam.
+Problema: a grade visual de cards ficou fragil para proporcoes variadas, thumbnails em cache e volumes grandes. Para estabilizar a navegacao, a galeria deixou de depender de miniaturas em cada item.
 
-Proposta:
+Implementado:
 
-- implementado: modo `Inteira` usa `aspect-ratio` por item a partir de `resolution` e preserva a foto/video sem corte com `object-fit: contain`;
-- implementado: modo `Preencher` mantem a experiencia compacta original com corte controlado;
-- implementado: modo `Compacta` reduz densidade para varredura rapida;
-- implementado: preferencia persistida no `localStorage`;
-- proximo passo opcional: evoluir para masonry/timeline visual quando houver volume maior e mais metadados de dimensao.
+- lista Explorer textual com colunas de arquivo, captura, origem, tamanho e status;
+- icones por tipo de midia;
+- badges de extensao, RAW, EXIF e preview;
+- preview visual apenas no inspetor lateral ao selecionar item;
+- cache de thumbnails versionado para evitar reaproveitar previews antigos;
+- renderizacao incremental em lotes.
+
+Proximos passos opcionais:
+
+- paginacao/filtros em SQLite;
+- ordenar por coluna;
+- selecao multipla e acoes em lote;
+- preview modal em tela maior quando o usuario pedir.
 
 Impacto:
 
-- melhora avaliacao visual sem abrir item por item;
-- evita que cortes do thumbnail escondam enquadramento real;
-- deixa a galeria mais fiel para fotos de camera, drone e celular;
-- cria base para modos futuros como masonry ou timeline visual.
+- navegacao mais estavel e legivel;
+- remove dependencia de cards/miniaturas para varredura diaria;
+- mantem preview disponivel sem poluir a lista;
+- cria base para operacoes de Explorer, como ordenacao e selecao multipla.
 
 ### 17. UX dos filtros superiores da Galeria
 
 Status: implementado com menu controlado.
 
-Problema: os menus/dropdowns da barra superior de filtros da Galeria ficam presos abertos depois que o usuario seleciona uma opcao. Hoje e preciso clicar novamente no mesmo filtro para fechar, o que deixa a interacao pesada e pode cobrir a grade.
+Problema: os menus/dropdowns da barra superior de filtros da Galeria ficam presos abertos depois que o usuario seleciona uma opcao. Hoje e preciso clicar novamente no mesmo filtro para fechar, o que deixa a interacao pesada e pode cobrir a lista.
 
 Proposta:
 
@@ -353,6 +361,9 @@ Proposta:
   - Origem/captura: cameras, drones, celulares, apps;
   - Acoes recomendadas: enriquecer metadados, gerar previews, revisar imports;
 - implementado: cards de insights continuam acionaveis e conectados aos filtros existentes;
+- implementado: Saude virou minibar clicavel acima do Cockpit;
+- implementado: "Na Galeria" virou quadrante dedicado com fotos, videos, periodo, importado, duplicatas evitadas e organizacao do acervo;
+- implementado: timeline passou a ser eixo cronologico real por mes;
 - proximo passo opcional: deduplicar ainda mais "Risco operacional", "Saude" e "Inteligencia" conforme surgirem mais sinais reais;
 - implementado: graficos pequenos e densos, sem cara de landing page: donut, barras compactas e listas priorizadas;
 - implementado: clique direto para filtrar a Galeria a partir de cada insight;
@@ -375,7 +386,7 @@ Impacto:
 6. Tags/notas.
 7. Import resumivel.
 8. Agente de insights.
-9. UX da grade por proporcao real.
+9. UX da Galeria Explorer.
 10. UX dos filtros superiores da Galeria.
 11. Bug de enriquecimento de metadados no frontend.
 12. Redesign do Cockpit.

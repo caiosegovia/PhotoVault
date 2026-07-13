@@ -13,15 +13,16 @@ from utils.constants import CONFIG_DIR, VIDEO_EXTENSIONS
 
 THUMB_DIR = CONFIG_DIR / "thumbs"
 THUMB_SIZE = (360, 240)
+THUMB_VERSION = "v2-fit-3x2"
 log = logging.getLogger(__name__)
 
 
 def cache_key(path: Path) -> str:
     try:
         stat = path.stat()
-        raw = f"{path.resolve()}|{stat.st_mtime_ns}|{stat.st_size}"
+        raw = f"{THUMB_VERSION}|{path.resolve()}|{stat.st_mtime_ns}|{stat.st_size}"
     except Exception:
-        raw = str(path)
+        raw = f"{THUMB_VERSION}|{path}"
     return hashlib.sha1(raw.encode("utf-8", errors="ignore")).hexdigest()
 
 

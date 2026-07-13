@@ -19,7 +19,7 @@ npm.cmd --version
 cargo --version
 ```
 
-ExifTool e opcional. Quando instalado no PATH, o app habilita enriquecimento rico:
+ExifTool e opcional. Quando instalado no PATH por uma instalacao externa confiavel, o app habilita enriquecimento rico:
 
 ```powershell
 exiftool -ver
@@ -69,9 +69,6 @@ cd <repo>
 New-Item -ItemType Directory -Force frontend\src-tauri\resources
 Copy-Item frontend\node_modules\ffmpeg-ffprobe-static\ffmpeg.exe frontend\src-tauri\resources\ffmpeg.exe -Force
 Copy-Item frontend\node_modules\ffmpeg-ffprobe-static\ffprobe.exe frontend\src-tauri\resources\ffprobe.exe -Force
-New-Item -ItemType Directory -Force frontend\src-tauri\resources\exiftool
-Copy-Item $env:USERPROFILE\.photovault\tools\exiftool.exe frontend\src-tauri\resources\exiftool\exiftool.exe -Force
-Copy-Item $env:USERPROFILE\.photovault\tools\exiftool_files frontend\src-tauri\resources\exiftool\exiftool_files -Recurse -Force
 .\.venv\Scripts\pyinstaller.exe --clean --onefile --name photovault-bridge --distpath frontend\src-tauri\resources --workpath build\pyinstaller --specpath build\pyinstaller bridge.py
 ```
 
@@ -81,7 +78,7 @@ Smoke test da bridge empacotada:
 '{}' | frontend\src-tauri\resources\photovault-bridge.exe diagnostics
 ```
 
-Observacao: o instalador de teste inclui Python/bridge, ffmpeg, ffprobe e ExifTool para permitir validacao em uma maquina Windows sem ambiente de desenvolvimento.
+Observacao: o instalador de teste inclui Python/bridge, ffmpeg e ffprobe. ExifTool nao deve ser baixado/embutido automaticamente; use uma instalacao externa confiavel no PATH quando precisar de metadados ricos.
 
 ## 6. Build Desktop Debug
 
@@ -122,11 +119,12 @@ Antes de publicar uma release:
 4. Analisar uma pasta pequena de teste.
 5. Revisar decisoes.
 6. Executar importacao.
-7. Abrir Galeria.
-8. Gerar previews.
-9. Abrir/localizar um arquivo no Explorer.
-10. Conferir Logs.
-11. Rodar enriquecimento se ExifTool estiver disponivel.
+7. Abrir Galeria em modo Explorer.
+8. Selecionar um item e conferir preview/metadados no painel lateral.
+9. Gerar previews quando necessario.
+10. Abrir/localizar um arquivo no Explorer.
+11. Conferir Logs.
+12. Rodar enriquecimento se ExifTool estiver disponivel por instalacao externa confiavel.
 
 ## 9. Publicacao No GitHub
 
@@ -151,3 +149,4 @@ git push origin vX.Y.Z
 - Automatizar parte do checklist em script ou CI.
 - Decidir formato de release: instalador, zip portavel ou ambos.
 - Definir estrategia final de licenca/distribuicao para ffmpeg/ffprobe antes de release publica.
+- Documentar recomendacao oficial de instalacao do ExifTool externo sem empacotar executavel suspeito.
