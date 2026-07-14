@@ -521,7 +521,7 @@ def analyze_import(payload: dict) -> dict:
         'duplicates': analysis.files_duplicate,
         'errors': analysis.errors,
     })
-    return {'ok': True, 'importId': analysis.import_id, **state({})}
+    return {'ok': True, 'importId': analysis.import_id}
 
 
 def files(payload: dict) -> dict:
@@ -677,6 +677,8 @@ def update_decision_group(payload: dict) -> dict:
     decision = payload.get('decision')
     if decision not in {'import', 'skip', 'review'}:
         raise ValueError('Decisão inválida')
+    if reason == 'new_asset' and decision == 'skip':
+        raise ValueError('Arquivos novos nao podem ser ignorados em massa. Use Revisar ou Importar.')
     files = get_import_files(import_id, limit=100000, reason=reason)
     for item in files:
         update_import_file_decision(int(item['id']), decision)

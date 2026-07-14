@@ -300,6 +300,15 @@ def execute_ingest_plan(
 ) -> dict:
     """Execute persisted ingest operations with staging and hash verification."""
     operations = get_ingest_operations(plan_id)
+    invalid_new_asset_skips = [
+        op for op in operations
+        if op['reason'] == 'new_asset' and op['action'] == 'skip'
+    ]
+    if invalid_new_asset_skips:
+        raise ValueError(
+            f"Plano invalido: {len(invalid_new_asset_skips)} arquivos novos estao marcados para ignorar. "
+            "Reanalise ou marque novos como importar antes de executar."
+        )
     import_row = get_import_by_plan(plan_id)
     import_id = int(import_row['id']) if import_row else None
     try:

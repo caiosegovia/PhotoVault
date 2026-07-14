@@ -84,6 +84,31 @@ def test_execute_ingest_plan_rejects_plan_larger_than_free_space(tmp_path, monke
     assert [row['status'] for row in operations if row['action'] == 'copy'] == ['planned']
 
 
+def test_execute_ingest_plan_rejects_new_assets_marked_as_skip(tmp_path, monkeypatch):
+    import core.database as database
+    import core.ingestion as ingestion
+
+    monkeypatch.setattr(database, 'DB_PATH', tmp_path / 'database.db')
+    database.init_db()
+
+    src = tmp_path / 'src'
+    vault = tmp_path / 'vault'
+    src.mkdir()
+    vault.mkdir()
+    (src / 'photo.jpg').write_bytes(b'original bytes')
+
+    plan = ingestion.build_ingest_plan([src], vault)
+    op = database.get_ingest_operations(plan.plan_id)[0]
+    database.update_ingest_operation_status(op['id'], 'skipped')
+    with database._get_conn() as conn:
+        conn.execute("UPDATE ingest_operations SET action='skip' WHERE id=?", (op['id'],))
+
+    with pytest.raises(ValueError, match='arquivos novos estao marcados para ignorar'):
+        ingestion.execute_ingest_plan(plan.plan_id)
+
+    assert not any(vault.rglob('*.jpg'))
+
+
 def test_build_ingest_plan_skips_asset_already_present_in_vault(tmp_path, monkeypatch):
     import core.database as database
     import core.ingestion as ingestion

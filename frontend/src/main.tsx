@@ -729,7 +729,14 @@ function App() {
     try {
       let latestInsights = importInsights;
       let updated = 0;
-      for (const group of importInsights.reasonGroups) {
+      const groups = decision === "skip"
+        ? importInsights.reasonGroups.filter((group) => group.reason !== "new_asset")
+        : importInsights.reasonGroups;
+      if (!groups.length) {
+        setMessage("Nenhum grupo elegivel para esta acao em massa.");
+        return;
+      }
+      for (const group of groups) {
         const result = await callBridge<{ importInsights: ImportInsights; updated: number }>("update_decision_group", {
           importId: selectedImport.id,
           reason: group.reason,
@@ -739,7 +746,7 @@ function App() {
         updated += result.updated;
       }
       setImportInsights(latestInsights);
-      setMessage(`${formatNumber(updated)} arquivos atualizados.`);
+      setMessage(`${formatNumber(updated)} arquivos atualizados.${decision === "skip" ? " Arquivos novos foram preservados para importacao." : ""}`);
     } catch (error) {
       setMessage(`Erro ao atualizar grupos: ${String(error)}`);
     } finally {
