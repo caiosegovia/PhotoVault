@@ -7,7 +7,7 @@ export type GalleryFilter = {
   device: string;
   camera: string;
   lens: string;
-  size: "all" | "large" | "small";
+  size: "all" | "large" | "medium" | "small";
   query: string;
   problem: "all" | "missing-thumb" | "without-date" | "video" | "raw";
 };
@@ -130,6 +130,7 @@ export function filterGalleryItems(items: GalleryItem[], filter: GalleryFilter) 
     if (camera !== "all" && normalizeFacet(normalizeCameraName(item.cameraMake, item.cameraModel, item.deviceName)) !== camera) return false;
     if (lens !== "all" && normalizeFacet(item.lensModel) !== lens) return false;
     if (filter.size === "large" && sizeBytes < 50 * 1024 * 1024) return false;
+    if (filter.size === "medium" && (sizeBytes <= 10 * 1024 * 1024 || sizeBytes >= 50 * 1024 * 1024)) return false;
     if (filter.size === "small" && sizeBytes > 10 * 1024 * 1024) return false;
     if (filter.problem === "missing-thumb" && !hasMissingPreview(item)) return false;
     if (filter.problem === "without-date" && itemYear(item) !== "sem data") return false;

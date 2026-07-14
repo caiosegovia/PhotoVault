@@ -347,6 +347,8 @@ def _gallery_payload(
             'devices': [_bucket(row) for row in breakdowns.get('devices', [])],
             'deviceTypes': [_bucket(row) for row in breakdowns.get('deviceTypes', [])],
             'cameras': [_bucket(row) for row in breakdowns.get('cameras', [])],
+            'lenses': [_bucket(row) for row in breakdowns.get('lenses', [])],
+            'sizes': [_bucket(row) for row in breakdowns.get('sizes', [])],
         },
         'capabilities': {
             'ffmpegAvailable': has_ffmpeg(),

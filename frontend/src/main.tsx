@@ -45,6 +45,7 @@ import {
 } from "./galleryFilters";
 import type {
   AssetCatalog,
+  BackgroundJob,
   BackendState,
   Bucket,
   Decision,
@@ -86,7 +87,7 @@ const EMPTY_GALLERY: GalleryState = {
   monthCount: 0,
   extensionCount: 0,
   duplicateSavings: { count: 0, bytes: "0 B", bytesRaw: 0 },
-  breakdowns: { media: [], years: [], months: [], extensions: [], deviceTypes: [], devices: [], cameras: [] },
+  breakdowns: { media: [], years: [], months: [], extensions: [], deviceTypes: [], devices: [], cameras: [], lenses: [], sizes: [] },
   capabilities: { ffmpegAvailable: false, exiftoolAvailable: false },
 };
 const EMPTY_IMPORT_INSIGHTS: ImportInsights = { reasonGroups: [], mediaGroups: [], statusGroups: [] };
@@ -127,7 +128,7 @@ const DEFAULT_FILTER: GalleryFilter = {
 function readStoredView(): View {
   try {
     const value = window.localStorage.getItem("photovault.activeView") as View | null;
-    return value && ["cockpit", "gallery", "import", "reviews", "logs"].includes(value) ? value : "cockpit";
+    return value && ["cockpit", "gallery", "import", "reviews", "jobs", "logs"].includes(value) ? value : "cockpit";
   } catch {
     return "cockpit";
   }
@@ -218,7 +219,7 @@ function mediaLabel(value?: string) {
 }
 
 function sizeLabel(value?: string) {
-  return { large: "Grandes", small: "Leves", all: "Todos" }[value || ""] ?? value ?? "";
+  return { large: "Grandes", medium: "Medios", small: "Leves", all: "Todos" }[value || ""] ?? value ?? "";
 }
 
 function cleanMeta(value: unknown) {
@@ -423,7 +424,7 @@ function App() {
   const importedBytesTotal = imports.reduce((total, item) => total + item.bytesNew, 0);
   const errorTotal = imports.reduce((total, item) => total + item.errors, 0);
   const duplicateRate = selectedImport?.found ? Math.round((selectedImport.duplicates / selectedImport.found) * 100) : 0;
-  const showProgressPanel = Boolean(progress && progress.status !== "idle" && !progressDismissed);
+  const progressVisible = Boolean(progress && progress.status !== "idle" && !progressDismissed);
   const rawCount = gallery.items.filter(isRaw).length;
   const missingThumbCount = gallery.items.filter(hasMissingPreview).length;
   const largeVideoBytes = gallery.items
@@ -671,6 +672,7 @@ function App() {
     }
     setBusy(true);
     setMessage("Analisando importacao. Para pastas grandes isso pode levar alguns minutos...");
+    setActiveView("jobs");
     startProgressPolling();
     try {
       const result = await callBridge<{ importId: number }>("analyze_import", {
@@ -765,6 +767,7 @@ function App() {
     }
     setBusy(true);
     setMessage("Executando importacao aprovada...");
+    setActiveView("jobs");
     startProgressPolling();
     try {
       await callBridge("execute_import", { planId: selectedImport.planId, verifyMode: "size" });
@@ -788,6 +791,7 @@ function App() {
   async function enrichMetadata() {
     setEnrichBusy(true);
     setMessage("Enriquecendo metadados com ExifTool...");
+    setActiveView("jobs");
     startProgressPolling();
     try {
       const state = await callBridge<BackendState>("enrich_metadata", { limit: 2000 });
@@ -893,6 +897,7 @@ function App() {
     { id: "gallery" as View, label: "Galeria", icon: Images },
     { id: "import" as View, label: "Importar", icon: FolderInput },
     { id: "reviews" as View, label: "Revisoes", icon: ListChecks },
+    { id: "jobs" as View, label: "Jobs", icon: Clock3 },
     { id: "logs" as View, label: "Logs", icon: Database },
   ];
 
@@ -924,13 +929,12 @@ function App() {
       </aside>
 
       <section className="workspace">
-        <header className={showProgressPanel ? "topbar" : "topbar compact"}>
+        <header className="topbar compact">
           <div>
             <p className="eyebrow"><Layers3 size={15} /> {activeView}</p>
             <h1>{headline(activeView, gallery, selectedImport, vault)}</h1>
             <p>{message}</p>
           </div>
-          {showProgressPanel ? <ProgressPanel progress={progress} onDismiss={dismissProgress} /> : null}
         </header>
 
         {activeView === "cockpit" ? (
@@ -993,7 +997,7 @@ function App() {
             sourcePath={sourcePath}
             busy={busy}
             progress={progress}
-            progressVisible={showProgressPanel}
+            progressVisible={false}
             disk={disk}
             onVault={setVault}
             onSource={setSourcePath}
@@ -1026,6 +1030,21 @@ function App() {
           />
         ) : null}
 
+        {activeView === "jobs" ? (
+          <JobsView
+            health={health}
+            progress={progress}
+            progressVisible={progressVisible}
+            logPath={logPath}
+            onRefresh={() => {
+              void refreshProgress();
+              void refreshHealth();
+            }}
+            onDismissProgress={dismissProgress}
+            onViewLogs={() => setActiveView("logs")}
+          />
+        ) : null}
+
         {activeView === "logs" ? <LogsView logs={logs} logPath={logPath} onRefresh={refreshLogs} /> : null}
       </section>
     </main>
@@ -1036,6 +1055,7 @@ function headline(view: View, gallery: GalleryState, selectedImport: ImportItem 
   if (view === "gallery") return vault.name || `${formatNumber(gallery.total)} arquivos preservados`;
   if (view === "import") return "Nova importacao";
   if (view === "reviews") return selectedImport ? `Revisao de ${selectedImport.name}` : "Revisoes de importacao";
+  if (view === "jobs") return "Jobs da galeria";
   if (view === "logs") return "Operacao e auditoria";
   return "Cockpit da galeria";
 }
@@ -1268,6 +1288,15 @@ function GalleryHealthSection({
   const score = Math.max(0, 100 - hardIssues * 22 - warningIssues * 8);
   const tone = hardIssues ? "bad" : warningIssues || issues.length ? "warn" : "good";
   const summary = issues.length ? issues.slice(0, 3).join(" | ") : "Sem alertas principais";
+  const jobCounts = Object.values(health.jobs ?? {}).reduce(
+    (acc, group) => {
+      acc.running += group.running ?? 0;
+      acc.error += (group.error ?? 0) + (group.failed ?? 0);
+      acc.done += group.done ?? 0;
+      return acc;
+    },
+    { running: 0, error: 0, done: 0 },
+  );
   return (
     <section className={`gallery-health-section ${tone}`}>
       <div className="gallery-health-main">
@@ -1286,35 +1315,35 @@ function GalleryHealthSection({
           <Signal label="Erros recentes" value={formatNumber(errors)} tone={errors ? "bad" : "good"} />
         </div>
       </div>
+      <div className="health-executive-grid">
+        <article>
+          <span>Ambiente</span>
+          <strong>{diagnostics.requiredMissing ? "Acao necessaria" : "Operacional"}</strong>
+          <em>{diagnostics.summary}</em>
+        </article>
+        <article>
+          <span>Catalogo</span>
+          <strong>{formatNumber(gallery.total)} itens</strong>
+          <em>{formatNumber(health.withoutDate || 0)} sem data | {formatNumber(health.metadataPending || 0)} metadata pendente</em>
+        </article>
+        <article>
+          <span>Jobs</span>
+          <strong>{formatNumber(jobCounts.running)} rodando</strong>
+          <em>{formatNumber(jobCounts.done)} concluidos | {formatNumber(jobCounts.error)} com erro</em>
+        </article>
+      </div>
       <div className="health-action-row">
         <button className="secondary" onClick={onHealth}><RotateCcw size={15} /> Atualizar saude</button>
         <button className="secondary" onClick={() => onFilter({ problem: "without-date" })}><CalendarDays size={15} /> Sem data</button>
         <button className="secondary" onClick={() => onFilter({ problem: "video", size: "large" })}><Film size={15} /> Videos grandes</button>
-        <button className="secondary" onClick={() => onView("reviews")}><ListChecks size={15} /> Jobs e revisoes</button>
-      </div>
-      <div className="health-detail-grid">
-        <HealthStatusCard icon={gallery.capabilities?.ffmpegAvailable ? CheckCircle2 : AlertTriangle} label="ffmpeg" value={gallery.capabilities?.ffmpegAvailable ? "Disponivel" : "Ausente"} tone={gallery.capabilities?.ffmpegAvailable ? "good" : "bad"} detail="Previews e videos dependem desta ferramenta." />
-        <HealthStatusCard icon={gallery.capabilities?.exiftoolAvailable ? CheckCircle2 : AlertTriangle} label="ExifTool" value={gallery.capabilities?.exiftoolAvailable ? "Disponivel" : "Pendente"} tone={gallery.capabilities?.exiftoolAvailable ? "good" : "warn"} detail={exiftoolStatusDetail(gallery)} />
-        <HealthStatusCard icon={HardDrive} label="Capacidade" value={formatBytes(disk.free)} tone={freePct > 15 ? "good" : "bad"} detail="Espaco disponivel no destino da galeria." />
-        <HealthStatusCard icon={Database} label="Catalogo" value={formatNumber(gallery.total)} tone={gallery.total ? "good" : "warn"} detail={`${formatNumber(gallery.photos)} fotos | ${formatNumber(gallery.videos)} videos`} />
+        <button className="secondary" onClick={() => onView("jobs")}><Clock3 size={15} /> Ver jobs</button>
       </div>
       {(health.insights ?? []).length ? (
         <div className="health-insight-strip">
-          {(health.insights ?? []).slice(0, 3).map((item) => (
+          {(health.insights ?? []).slice(0, 2).map((item) => (
             <article key={item.title}>
               <strong>{item.title}</strong>
               <span>{item.detail}</span>
-            </article>
-          ))}
-        </div>
-      ) : null}
-      {(health.recentJobs ?? []).length ? (
-        <div className="health-job-strip">
-          {(health.recentJobs ?? []).slice(0, 4).map((job) => (
-            <article key={job.id} className={job.status}>
-              <span>{job.kind}</span>
-              <strong>{job.status}</strong>
-              <em>{job.error || job.completed_at || job.updated_at || job.started_at || job.created_at || "sem data"}</em>
             </article>
           ))}
         </div>
@@ -1524,11 +1553,14 @@ function GalleryView({
   const extensionOptions = gallery.breakdowns.extensions.map((item) => ({ ...item, label: `.${normalizeExtension(item.label)}` }));
   const deviceOptions = gallery.breakdowns.devices ?? [];
   const cameraOptions = gallery.breakdowns.cameras ?? [];
-  const lensOptions = bucketsBy(gallery.items, (item) => item.lensModel || "Desconhecido", 10);
-  const sizeOptions = [
-    bucket("large", gallery.items.filter((item) => sizeBucketLabel(item) === "large")),
-    bucket("small", gallery.items.filter((item) => sizeBucketLabel(item) === "small")),
-  ];
+  const lensOptions = gallery.breakdowns.lenses ?? bucketsBy(gallery.items, (item) => item.lensModel || "Desconhecido", 10);
+  const sizeOptions = gallery.breakdowns.sizes?.length
+    ? gallery.breakdowns.sizes
+    : [
+      bucket("large", gallery.items.filter((item) => sizeBucketLabel(item) === "large")),
+      bucket("medium", gallery.items.filter((item) => sizeBucketLabel(item) === "medium")),
+      bucket("small", gallery.items.filter((item) => sizeBucketLabel(item) === "small")),
+    ];
   const activeFilterCount = [
     filter.media,
     filter.year,
@@ -1872,6 +1904,113 @@ function CapacityAlert({ message }: { message: string }) {
       </div>
     </div>
   );
+}
+
+function JobsView({
+  health,
+  progress,
+  progressVisible,
+  logPath,
+  onRefresh,
+  onDismissProgress,
+  onViewLogs,
+}: {
+  health: HealthState;
+  progress: ProgressInfo | null;
+  progressVisible: boolean;
+  logPath: string;
+  onRefresh: () => void;
+  onDismissProgress: () => void;
+  onViewLogs: () => void;
+}) {
+  const recentJobs = health.recentJobs ?? [];
+  const summary = Object.entries(health.jobs ?? {}).flatMap(([kind, statuses]) =>
+    Object.entries(statuses).map(([status, count]) => ({ kind, status, count })),
+  );
+  const running = summary.filter((item) => item.status === "running").reduce((sum, item) => sum + item.count, 0);
+  const failures = summary.filter((item) => ["error", "failed"].includes(item.status)).reduce((sum, item) => sum + item.count, 0);
+  const completed = summary.filter((item) => item.status === "done").reduce((sum, item) => sum + item.count, 0);
+  return (
+    <section className="jobs-layout">
+      <div className="panel span-2">
+        <SectionTitle eyebrow="Fila operacional" title="Jobs da galeria" action="Atualizar" onAction={onRefresh} />
+        <div className="job-summary-grid">
+          <BigNumber label="Rodando" value={formatNumber(running)} detail="processos ativos agora" />
+          <BigNumber label="Concluidos" value={formatNumber(completed)} detail="historico registrado" />
+          <BigNumber label="Falhas" value={formatNumber(failures)} detail="precisam revisao" />
+          <BigNumber label="Log" value={logPath ? "Ativo" : "Sem log"} detail={logPath || "arquivo nao carregado"} />
+        </div>
+        {progressVisible ? (
+          <div className="job-live-progress">
+            <SectionTitle eyebrow="Agora" title={progress?.status === "running" ? "Processando" : "Ultimo resultado"} />
+            <ProgressPanel progress={progress} embedded onDismiss={onDismissProgress} />
+            <p className="path-copy">{progress?.path || "Sem processo em andamento."}</p>
+          </div>
+        ) : (
+          <EmptyState text="Nenhum processo em andamento agora." />
+        )}
+      </div>
+      <div className="panel">
+        <SectionTitle eyebrow="Resumo por tipo" title={`${formatNumber(summary.length)} estados`} />
+        <div className="job-kind-grid">
+          {summary.map((item) => (
+            <article key={`${item.kind}-${item.status}`} className={item.status}>
+              <span>{jobKindLabel(item.kind)}</span>
+              <strong>{formatNumber(item.count)}</strong>
+              <em>{jobStatusLabel(item.status)}</em>
+            </article>
+          ))}
+          {!summary.length ? <EmptyState text="Nenhum job registrado ainda." /> : null}
+        </div>
+      </div>
+      <div className="panel span-2">
+        <SectionTitle eyebrow="Historico" title="Ultimas execucoes" action="Abrir logs" onAction={onViewLogs} />
+        <div className="job-list">
+          {recentJobs.map((job) => <JobRow key={job.id} job={job} />)}
+          {!recentJobs.length ? <EmptyState text="Sem jobs no historico local." /> : null}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function JobRow({ job }: { job: BackgroundJob }) {
+  return (
+    <article className={`job-row ${job.status}`}>
+      <div>
+        <span className={`status ${job.status}`}>{jobStatusLabel(job.status)}</span>
+        <strong>{jobKindLabel(job.kind)}</strong>
+        <em>{formatJobTime(job.updated_at || job.completed_at || job.started_at || job.created_at)}</em>
+      </div>
+      <p>{job.error || jobPayloadSummary(job.payload) || `${job.entity_type || "galeria"} ${job.entity_id ?? ""}`}</p>
+    </article>
+  );
+}
+
+function jobKindLabel(value?: string) {
+  return { analysis: "Analise de importacao", import: "Importacao", metadata: "Metadados", previews: "Previews" }[value || ""] ?? (value || "Job");
+}
+
+function jobStatusLabel(value?: string) {
+  return { running: "Rodando", done: "Concluido", warning: "Aviso", error: "Erro", failed: "Falhou" }[value || ""] ?? (value || "Pendente");
+}
+
+function jobPayloadSummary(payload?: Record<string, unknown>) {
+  if (!payload) return "";
+  const parts = [
+    payload.found !== undefined ? `${formatNumber(Number(payload.found))} encontrados` : "",
+    payload.new !== undefined ? `${formatNumber(Number(payload.new))} novos` : "",
+    payload.duplicates !== undefined ? `${formatNumber(Number(payload.duplicates))} duplicados` : "",
+    payload.count !== undefined ? `${formatNumber(Number(payload.count))} itens` : "",
+    payload.enriched !== undefined ? `${formatNumber(Number(payload.enriched))} enriquecidos` : "",
+    payload.errors !== undefined ? `${formatNumber(Number(payload.errors))} erros` : "",
+  ].filter(Boolean);
+  return parts.join(" | ");
+}
+
+function formatJobTime(value?: string) {
+  if (!value) return "sem data";
+  return value.slice(0, 19).replace("T", " ");
 }
 
 function LogsView({ logs, logPath, onRefresh }: { logs: LogState; logPath: string; onRefresh: () => void }) {

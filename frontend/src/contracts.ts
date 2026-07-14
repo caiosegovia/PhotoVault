@@ -2,7 +2,7 @@ import type { GalleryItem, GalleryPage } from "./galleryFilters";
 
 export type ImportStatus = "ready" | "done" | "running" | "failed";
 export type Decision = "import" | "skip" | "review";
-export type View = "cockpit" | "gallery" | "import" | "reviews" | "logs";
+export type View = "cockpit" | "gallery" | "import" | "reviews" | "jobs" | "logs";
 
 export type ImportItem = {
   id: number;
@@ -35,6 +35,8 @@ export type GalleryBreakdowns = {
   deviceTypes?: Bucket[];
   devices?: Bucket[];
   cameras?: Bucket[];
+  lenses?: Bucket[];
+  sizes?: Bucket[];
 };
 
 export type GalleryState = {

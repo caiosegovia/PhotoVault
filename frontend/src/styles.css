@@ -440,7 +440,8 @@ h1 {
 }
 
 .cockpit-grid,
-.import-layout {
+.import-layout,
+.jobs-layout {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
@@ -541,6 +542,48 @@ h1 {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.health-executive-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.health-executive-grid article {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.health-executive-grid span,
+.health-executive-grid strong,
+.health-executive-grid em {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.health-executive-grid span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.health-executive-grid strong {
+  margin-top: 4px;
+  font-size: 16px;
+}
+
+.health-executive-grid em {
+  margin-top: 3px;
+  color: var(--soft);
+  font-size: 11px;
+  font-style: normal;
 }
 
 .health-status-card {
@@ -2015,6 +2058,116 @@ h1 {
   font-size: 11px;
 }
 
+.job-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.job-live-progress {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 12px;
+  background: #101212;
+}
+
+.job-kind-grid,
+.job-list {
+  display: grid;
+  gap: 8px;
+}
+
+.job-kind-grid article,
+.job-row {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 10px;
+  background: var(--panel-2);
+}
+
+.job-kind-grid article.done,
+.job-row.done {
+  border-color: rgba(105, 217, 135, 0.28);
+}
+
+.job-kind-grid article.running,
+.job-row.running {
+  border-color: rgba(238, 196, 94, 0.34);
+}
+
+.job-kind-grid article.error,
+.job-kind-grid article.failed,
+.job-row.error,
+.job-row.failed {
+  border-color: rgba(242, 119, 119, 0.38);
+}
+
+.job-kind-grid span,
+.job-kind-grid strong,
+.job-kind-grid em {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.job-kind-grid span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.job-kind-grid strong {
+  margin-top: 5px;
+  font-size: 24px;
+}
+
+.job-kind-grid em {
+  margin-top: 2px;
+  color: var(--soft);
+  font-size: 11px;
+  font-style: normal;
+}
+
+.job-row {
+  display: grid;
+  grid-template-columns: minmax(210px, 0.75fr) minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+}
+
+.job-row strong,
+.job-row em,
+.job-row p {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.job-row strong {
+  margin-top: 5px;
+  font-size: 14px;
+}
+
+.job-row em {
+  margin-top: 2px;
+  color: var(--soft);
+  font-size: 11px;
+  font-style: normal;
+}
+
+.job-row p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .gallery-toolbar strong,
 .gallery-toolbar span {
   display: block;
@@ -2787,8 +2940,34 @@ h1 {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .health-executive-grid,
+  .job-summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .org-highlights,
   .timeline-summary {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 980px) {
+  .cockpit-grid,
+  .import-layout,
+  .jobs-layout,
+  .gallery-health-main,
+  .health-signal-grid,
+  .health-executive-grid,
+  .job-summary-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .span-2,
+  .span-3 {
+    grid-column: 1 / -1;
+  }
+
+  .job-row {
+    grid-template-columns: minmax(0, 1fr);
   }
 }

@@ -212,3 +212,109 @@ def test_search_gallery_uses_search_assets(monkeypatch):
     assert result['page']['hasMore'] is True
     assert result['items'][0]['tags'] == 'drone'
     assert result['items'][0]['latestNote'] == 'Bom take'
+from datetime import datetime
+
+
+def _seed_gallery_asset(database, index: int, *, path: str, sha: str, size: int, media_type: str,
+                        extension: str, date_taken: datetime | None, device_name: str,
+                        device_type: str, camera_make: str = "", camera_model: str = "",
+                        lens_model: str = "", width: int = 2000, height: int = 1500) -> int:
+    asset_id = database.upsert_asset({
+        'sha256': sha,
+        'size': size,
+        'media_type': media_type,
+        'extension': extension,
+        'date_taken': date_taken,
+        'width': width,
+        'height': height,
+    })
+    database.save_asset_instance(asset_id, path, role='destination', quality_score=index)
+    database.save_asset_metadata(asset_id, path, 'exiftool', {
+        'media_type': media_type,
+        'extension': extension,
+        'device_name': device_name,
+        'device_type': device_type,
+        'camera_make': camera_make,
+        'camera_model': camera_model,
+        'lens_model': lens_model,
+        'width': width,
+        'height': height,
+    }, extractor_version='12.99', status='ok')
+    return asset_id
+
+
+def test_gallery_facets_round_trip_against_real_sqlite(tmp_path, monkeypatch):
+    import bridge
+    import core.database as database
+
+    monkeypatch.setattr(database, 'DB_PATH', tmp_path / 'database.db')
+    monkeypatch.setattr(bridge, 'backfill_catalog_metadata_from_gallery', lambda: 0)
+    monkeypatch.setattr(bridge, 'get_cached_thumbnail', lambda _path: None)
+    monkeypatch.setattr(bridge, 'has_ffmpeg', lambda: True)
+    monkeypatch.setattr(bridge, 'has_exiftool', lambda: True)
+    monkeypatch.setattr(bridge, 'exiftool_version', lambda: '12.99')
+    monkeypatch.setattr(bridge, 'exiftool_status', lambda: {'available': True})
+    monkeypatch.setattr(bridge, 'processing_summary', lambda _processor: {'total': 0})
+    database.init_db()
+
+    _seed_gallery_asset(
+        database, 1, path='D:/Vault/2026/06/DJI_0001.JPG', sha='a' * 64,
+        size=1_500_000, media_type='photo', extension='jpg',
+        date_taken=datetime(2026, 6, 26, 8, 34, 43),
+        device_name='DJI FC7303', device_type='drone', camera_model='FC7303', lens_model='24mm',
+    )
+    _seed_gallery_asset(
+        database, 2, path='D:/Vault/2026/06/DJI_0002.DNG', sha='b' * 64,
+        size=23_400_000, media_type='photo', extension='dng',
+        date_taken=datetime(2026, 6, 26, 8, 34, 45),
+        device_name='DJI FC7303', device_type='drone', camera_make='DJI', camera_model='FC7303', lens_model='24mm',
+    )
+    _seed_gallery_asset(
+        database, 3, path='D:/Vault/2025/12/DJI_VIDEO.MP4', sha='c' * 64,
+        size=2_760_000_000, media_type='video', extension='mp4',
+        date_taken=datetime(2025, 12, 1, 10, 0, 0),
+        device_name='DJI FC7303', device_type='drone', camera_make='DJI', camera_model='FC7303',
+        width=3840, height=2160,
+    )
+    _seed_gallery_asset(
+        database, 4, path='D:/Vault/2024/01/CANON_0001.JPG', sha='d' * 64,
+        size=8_000_000, media_type='photo', extension='.jpg',
+        date_taken=datetime(2024, 1, 10, 12, 0, 0),
+        device_name='Canon EOS 5D Mark III', device_type='camera', camera_make='Canon', camera_model='EOS 5D Mark III', lens_model='50mm',
+    )
+    _seed_gallery_asset(
+        database, 5, path='D:/Vault/2025/11/PHONE_0001.HEIC', sha='e' * 64,
+        size=4_000_000, media_type='photo', extension='heic',
+        date_taken=datetime(2025, 11, 5, 9, 0, 0),
+        device_name='Apple iPhone 15 Pro', device_type='phone', camera_make='Apple', camera_model='iPhone 15 Pro',
+    )
+
+    base = bridge.gallery({'limit': 20})
+
+    assert base['total'] == 5
+    assert {item['label'] for item in base['breakdowns']['sizes']} == {'large', 'medium', 'small'}
+    assert any(item['label'] == '24mm' for item in base['breakdowns']['lenses'])
+
+    facet_cases = [
+        ('media', 'video', {'media': 'video'}),
+        ('months', '2026-06', {'month': '2026-06'}),
+        ('extensions', 'dng', {'extension': 'dng'}),
+        ('extensions', 'jpg', {'extension': 'jpg'}),
+        ('devices', 'DJI FC7303', {'device': 'DJI FC7303'}),
+        ('cameras', 'DJI FC7303', {'camera': 'DJI FC7303'}),
+        ('lenses', '24mm', {'lens': '24mm'}),
+        ('sizes', 'large', {'size': 'large'}),
+        ('sizes', 'medium', {'size': 'medium'}),
+        ('sizes', 'small', {'size': 'small'}),
+    ]
+    for _facet, _label, filters in facet_cases:
+        result = bridge.gallery({'limit': 10, 'filter': {'media': 'all', 'year': 'all', 'month': 'all',
+                                                         'extension': 'all', 'deviceType': 'all', 'device': 'all',
+                                                         'camera': 'all', 'lens': 'all', 'size': 'all',
+                                                         'problem': 'all', 'query': '', **filters}})
+        assert result['filteredTotal'] > 0
+        assert result['items'], filters
+
+    combo = bridge.gallery({'limit': 10, 'filter': {'media': 'photo', 'month': '2026-06', 'device': 'DJI FC7303'}})
+    assert combo['filteredTotal'] == 2
+    assert {item['extension'] for item in combo['items']} == {'jpg', 'dng'}

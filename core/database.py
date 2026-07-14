@@ -1323,7 +1323,7 @@ def _gallery_filter_sql(filters: Optional[dict] = None, query: str = "") -> tupl
 
     extension = str(filters.get('extension') or '').lower().lstrip('.')
     if extension and extension != 'all':
-        where.append("lower(COALESCE(a.extension, '')) = ?")
+        where.append("lower(ltrim(COALESCE(a.extension, ''), '.')) = ?")
         params.append(extension)
 
     device_type = str(filters.get('deviceType') or filters.get('device_type') or '').lower()
@@ -1347,8 +1347,21 @@ def _gallery_filter_sql(filters: Optional[dict] = None, query: str = "") -> tupl
 
     camera = str(filters.get('camera') or '').lower()
     if camera and camera != 'all':
-        where.append("lower(trim(COALESCE(am.camera_make, '') || ' ' || COALESCE(am.camera_model, ''))) LIKE ?")
-        params.append(f"%{camera}%")
+        where.append("""(
+            lower(trim(COALESCE(am.camera_make, '') || ' ' || COALESCE(am.camera_model, ''))) LIKE ?
+            OR lower(trim(
+                CASE
+                  WHEN lower(COALESCE(am.camera_make, '')) LIKE '%dji%' OR upper(COALESCE(am.camera_model, '')) LIKE 'FC%' THEN 'DJI'
+                  ELSE COALESCE(am.camera_make, '')
+                END || ' ' ||
+                CASE
+                  WHEN upper(COALESCE(am.camera_model, '')) LIKE 'DJI %' THEN substr(COALESCE(am.camera_model, ''), 5)
+                  ELSE COALESCE(am.camera_model, '')
+                END
+            )) LIKE ?
+            OR lower(COALESCE(am.device_name, '')) = ?
+        )""")
+        params.extend([f"%{camera}%", f"%{camera}%", camera])
 
     lens = str(filters.get('lens') or '').lower()
     if lens and lens != 'all':
@@ -1359,6 +1372,9 @@ def _gallery_filter_sql(filters: Optional[dict] = None, query: str = "") -> tupl
     if size == 'large':
         where.append("COALESCE(a.size, 0) >= ?")
         params.append(50 * 1024 * 1024)
+    elif size == 'medium':
+        where.append("COALESCE(a.size, 0) > ? AND COALESCE(a.size, 0) < ?")
+        params.extend([10 * 1024 * 1024, 50 * 1024 * 1024])
     elif size == 'small':
         where.append("COALESCE(a.size, 0) <= ?")
         params.append(10 * 1024 * 1024)
@@ -1369,7 +1385,7 @@ def _gallery_filter_sql(filters: Optional[dict] = None, query: str = "") -> tupl
     elif problem == 'video':
         where.append("lower(COALESCE(a.media_type, '')) IN ('video', 'movie')")
     elif problem == 'raw':
-        where.append("lower(COALESCE(a.extension, '')) IN ('dng', 'cr2', 'cr3', 'nef', 'arw', 'raf', 'rw2', 'orf')")
+        where.append("lower(ltrim(COALESCE(a.extension, ''), '.')) IN ('dng', 'cr2', 'cr3', 'nef', 'arw', 'raf', 'rw2', 'orf')")
 
     term = (query or filters.get('query') or '').strip().lower()
     if term:
@@ -1955,6 +1971,51 @@ def gallery_breakdowns(limit: int = 8) -> dict:
                LIMIT ?""",
             (limit,),
         ).fetchall()
+        lenses = conn.execute(
+            """WITH asset_meta AS (
+                   SELECT asset_id,
+                          COALESCE(
+                            MAX(CASE WHEN extractor='exiftool' AND status='ok' THEN NULLIF(json_extract(raw_json, '$.lens_model'), '') END),
+                            MAX(NULLIF(json_extract(raw_json, '$.lens_model'), '')),
+                            ''
+                          ) AS label
+                   FROM metadata_extractions
+                   GROUP BY asset_id
+               )
+               SELECT am.label AS label,
+                      COUNT(*) AS count,
+                      COALESCE(SUM(a.size), 0) AS bytes
+               FROM asset_instances ai
+               JOIN assets a ON a.id = ai.asset_id
+               LEFT JOIN asset_meta am ON am.asset_id = a.id
+               WHERE ai.role = 'destination'
+                 AND am.label <> ''
+                 AND am.label <> 'Desconhecido'
+               GROUP BY am.label
+               ORDER BY count DESC
+               LIMIT ?""",
+            (limit,),
+        ).fetchall()
+        sizes = conn.execute(
+            """WITH sized AS (
+                   SELECT a.size,
+                          CASE
+                            WHEN COALESCE(a.size, 0) >= ? THEN 'large'
+                            WHEN COALESCE(a.size, 0) <= ? THEN 'small'
+                            ELSE 'medium'
+                          END AS label
+                   FROM asset_instances ai
+                   JOIN assets a ON a.id = ai.asset_id
+                   WHERE ai.role = 'destination'
+               )
+               SELECT label,
+                      COUNT(*) AS count,
+                      COALESCE(SUM(size), 0) AS bytes
+               FROM sized
+               GROUP BY label
+               ORDER BY CASE label WHEN 'large' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END""",
+            (50 * 1024 * 1024, 10 * 1024 * 1024),
+        ).fetchall()
 
     def rows(values):
         return [{'label': row['label'], 'count': row['count'] or 0, 'bytes': row['bytes'] or 0} for row in values]
@@ -1967,6 +2028,8 @@ def gallery_breakdowns(limit: int = 8) -> dict:
         'devices': rows(devices),
         'deviceTypes': rows(device_types),
         'cameras': rows(cameras),
+        'lenses': rows(lenses),
+        'sizes': rows(sizes),
     }
 
 
