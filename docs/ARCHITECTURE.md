@@ -120,6 +120,8 @@ sequenceDiagram
 | `diagnostics` | `{}` | status de Python, Node/npm, Cargo, ffmpeg, ffprobe, ExifTool e paths locais. |
 | `reset_all` | `{ confirmReset: true }` | limpa banco/cache/progresso locais e retorna estado. |
 
+O frontend nao consulta progresso via bridge Python durante polling. O comando Tauri `progress_snapshot_native` le `%USERPROFILE%\.photovault\progress.json` diretamente, evitando criar processos `photovault-bridge` a cada leitura de status.
+
 ## Pipeline De Importacao
 
 ```mermaid

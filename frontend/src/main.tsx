@@ -309,6 +309,10 @@ async function revealNativePath(path: string) {
   return invoke<void>("reveal_path_native", { path });
 }
 
+async function readProgressNative() {
+  return invoke<{ progress: ProgressInfo; logPath: string }>("progress_snapshot_native");
+}
+
 function App() {
   const [activeView, setActiveView] = React.useState<View>(readStoredView);
   const [imports, setImports] = React.useState<ImportItem[]>([]);
@@ -336,6 +340,8 @@ function App() {
   const [gallerySort, setGallerySort] = React.useState<GallerySort>("date_desc");
   const progressTimerRef = React.useRef<number | null>(null);
   const galleryLoadingRef = React.useRef(false);
+  const galleryRefreshQueuedRef = React.useRef<{ ensureThumbnails: boolean } | null>(null);
+  const catalogRequestRef = React.useRef(0);
 
   const selectedImport = imports.find((item) => item.id === selectedImportId) ?? imports[0] ?? null;
 
@@ -396,8 +402,13 @@ function App() {
   const selectedGalleryItem = filteredItems.find((item) => item.id === selectedGalleryId) ?? filteredItems[0] ?? null;
 
   React.useEffect(() => {
-    if (selectedGalleryItem?.assetId) loadCatalog(selectedGalleryItem.assetId);
-    else setCatalog(null);
+    if (!selectedGalleryItem?.assetId) {
+      setCatalog(null);
+      return;
+    }
+    const assetId = selectedGalleryItem.assetId;
+    const timer = window.setTimeout(() => loadCatalog(assetId), 180);
+    return () => window.clearTimeout(timer);
   }, [selectedGalleryItem?.assetId]);
 
   const counts = importInsights.reasonGroups.reduce(
@@ -450,7 +461,10 @@ function App() {
   }
 
   async function refreshGallery(ensureThumbnails = false) {
-    if (galleryLoadingRef.current) return;
+    if (galleryLoadingRef.current) {
+      galleryRefreshQueuedRef.current = { ensureThumbnails: galleryRefreshQueuedRef.current?.ensureThumbnails || ensureThumbnails };
+      return;
+    }
     galleryLoadingRef.current = true;
     setGalleryBusy(true);
     setThumbsBusy(ensureThumbnails);
@@ -472,6 +486,9 @@ function App() {
       setThumbsBusy(false);
       setGalleryBusy(false);
       galleryLoadingRef.current = false;
+      const queued = galleryRefreshQueuedRef.current;
+      galleryRefreshQueuedRef.current = null;
+      if (queued) void refreshGallery(queued.ensureThumbnails);
     }
   }
 
@@ -533,14 +550,15 @@ function App() {
   }
 
   async function loadCatalog(assetId: number) {
+    const requestId = ++catalogRequestRef.current;
     setCatalogBusy(true);
     try {
       const result = await callBridge<AssetCatalog>("catalog", { assetId });
-      setCatalog(result);
+      if (requestId === catalogRequestRef.current) setCatalog(result);
     } catch (error) {
-      setMessage(`Erro ao carregar catalogo do item: ${String(error)}`);
+      if (requestId === catalogRequestRef.current) setMessage(`Erro ao carregar catalogo do item: ${String(error)}`);
     } finally {
-      setCatalogBusy(false);
+      if (requestId === catalogRequestRef.current) setCatalogBusy(false);
     }
   }
 
@@ -704,9 +722,29 @@ function App() {
     }
   }
 
-  function bulkDecision(decision: Decision) {
+  async function bulkDecision(decision: Decision) {
     if (!selectedImport?.id) return;
-    Promise.all(importInsights.reasonGroups.map((group) => persistGroupDecision(group, decision)));
+    setBusy(true);
+    setMessage(`Aplicando ${decisionLabel(decision).toLowerCase()} nos grupos...`);
+    try {
+      let latestInsights = importInsights;
+      let updated = 0;
+      for (const group of importInsights.reasonGroups) {
+        const result = await callBridge<{ importInsights: ImportInsights; updated: number }>("update_decision_group", {
+          importId: selectedImport.id,
+          reason: group.reason,
+          decision,
+        });
+        latestInsights = result.importInsights;
+        updated += result.updated;
+      }
+      setImportInsights(latestInsights);
+      setMessage(`${formatNumber(updated)} arquivos atualizados.`);
+    } catch (error) {
+      setMessage(`Erro ao atualizar grupos: ${String(error)}`);
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function executeSelected() {
@@ -766,7 +804,7 @@ function App() {
 
   async function refreshProgress() {
     try {
-      const result = await callBridge<{ progress: ProgressInfo; logPath: string }>("progress");
+      const result = await readProgressNative();
       setProgress(result.progress);
       setLogPath(result.logPath || result.progress.logPath || "");
       if (result.progress.status === "running") {
@@ -782,20 +820,23 @@ function App() {
     stopProgressPolling();
     setProgressDismissed(false);
     let ticks = 0;
-    const timer = window.setInterval(async () => {
+    const poll = async () => {
       ticks += 1;
       await refreshProgress();
-      if (ticks > 720) stopProgressPolling();
-    }, 1000);
-    progressTimerRef.current = timer;
-    window.setTimeout(() => {
-      if (progressTimerRef.current === timer) stopProgressPolling();
-    }, 12 * 60 * 1000);
+      if (ticks > 360) {
+        stopProgressPolling();
+        return;
+      }
+      if (progressTimerRef.current !== null) {
+        progressTimerRef.current = window.setTimeout(poll, 2000);
+      }
+    };
+    progressTimerRef.current = window.setTimeout(poll, 250);
   }
 
   function stopProgressPolling() {
     if (progressTimerRef.current !== null) {
-      window.clearInterval(progressTimerRef.current);
+      window.clearTimeout(progressTimerRef.current);
       progressTimerRef.current = null;
     }
   }

@@ -1,4 +1,5 @@
-use serde_json::Value;
+use serde_json::{json, Value};
+use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -99,6 +100,40 @@ async fn bridge(app: tauri::AppHandle, command: String, payload: Value) -> Resul
 }
 
 #[tauri::command]
+async fn progress_snapshot_native() -> Result<Value, String> {
+  tauri::async_runtime::spawn_blocking(move || {
+    let home = std::env::var("USERPROFILE")
+      .or_else(|_| std::env::var("HOME"))
+      .map_err(|err| format!("Nao consegui localizar home do usuario: {err}"))?;
+    let config_dir = PathBuf::from(home).join(".photovault");
+    let progress_path = config_dir.join("progress.json");
+    let log_path = config_dir.join("photovault.log");
+    let progress = if progress_path.exists() {
+      let body = fs::read_to_string(&progress_path)
+        .map_err(|err| format!("Falha ao ler progresso: {err}"))?;
+      serde_json::from_str::<Value>(&body)
+        .map_err(|err| format!("JSON invalido de progresso: {err}"))?
+    } else {
+      json!({
+        "stage": "idle",
+        "message": "Sem processo em andamento.",
+        "current": 0,
+        "total": 0,
+        "status": "idle",
+        "path": "",
+        "logPath": log_path.to_string_lossy()
+      })
+    };
+    Ok(json!({
+      "progress": progress,
+      "logPath": log_path.to_string_lossy()
+    }))
+  })
+  .await
+  .map_err(|err| err.to_string())?
+}
+
+#[tauri::command]
 async fn pick_folder_native(initial: Option<String>, title: Option<String>) -> Result<String, String> {
   tauri::async_runtime::spawn_blocking(move || {
     let mut dialog = rfd::FileDialog::new().set_title(title.as_deref().unwrap_or("Selecione uma pasta"));
@@ -156,7 +191,7 @@ async fn reveal_path_native(path: String) -> Result<(), String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   tauri::Builder::default()
-    .invoke_handler(tauri::generate_handler![bridge, pick_folder_native, open_path_native, reveal_path_native])
+    .invoke_handler(tauri::generate_handler![bridge, progress_snapshot_native, pick_folder_native, open_path_native, reveal_path_native])
     .setup(|app| {
       if cfg!(debug_assertions) {
         app.handle().plugin(
