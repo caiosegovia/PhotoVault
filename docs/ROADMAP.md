@@ -43,7 +43,7 @@ Implementado:
 
 ### 4. Paginacao ou virtualizacao da galeria
 
-Status: curto prazo implementado no frontend com renderizacao incremental da lista Explorer. Ainda falta mover filtros/paginacao para SQLite.
+Status: curto prazo implementado no frontend com renderizacao incremental da lista Explorer. O contrato da bridge ja aceita `limit`/`offset`; ainda falta mover filtros/sort para SQLite e usar paginacao real na UI.
 
 Problema: `GALLERY_ITEM_LIMIT` chega a 50000 itens e a UI filtra localmente.
 
@@ -51,11 +51,12 @@ Implementado:
 
 - renderizacao inicial limitada a 240 linhas;
 - botao para carregar mais resultados filtrados sem redesenhar todos os itens de uma vez.
+- payload `gallery`/`search_gallery` retorna bloco `page` com `limit`, `offset`, `count` e `hasMore`.
 
 Proximos passos:
 
-- medio prazo: mover filtros/paginacao para SQLite;
-- contrato sugerido: `gallery({ limit, offset, filter, sort })`;
+- medio prazo: mover filtros e ordenacao para SQLite;
+- contrato alvo: `gallery({ limit, offset, filter, sort })`;
 - manter facetas agregadas independentes da pagina.
 
 Impacto:
@@ -251,7 +252,8 @@ Problema: o caminho debug funciona, mas release final precisa checklist e decisa
 Proposta:
 
 - implementado: bridge Python empacotada como `photovault-bridge.exe` via PyInstaller para reduzir dependencia da `.venv` em outro dispositivo;
-- implementado: `ffmpeg.exe`, `ffprobe.exe` e ExifTool entram como recursos do bundle de teste e sao passados para a bridge por variavel de ambiente;
+- implementado: `ffmpeg.exe` e `ffprobe.exe` entram como recursos do bundle de teste e sao passados para a bridge por variavel de ambiente;
+- implementado: ExifTool foi removido do bundle e deve vir de instalacao externa confiavel via PATH ou `PHOTOVAULT_EXIFTOOL`;
 - validar Tauri release em maquina Windows limpa;
 - documentar instalador;
 - automatizar release no GitHub depois que o fluxo local estiver estavel.
@@ -361,7 +363,7 @@ Proposta:
   - Origem/captura: cameras, drones, celulares, apps;
   - Acoes recomendadas: enriquecer metadados, gerar previews, revisar imports;
 - implementado: cards de insights continuam acionaveis e conectados aos filtros existentes;
-- implementado: Saude virou minibar clicavel acima do Cockpit;
+- implementado: Saude virou uma secao propria acima do Cockpit, com score operacional, sinais criticos e acoes diretas;
 - implementado: "Na Galeria" virou quadrante dedicado com fotos, videos, periodo, importado, duplicatas evitadas e organizacao do acervo;
 - implementado: timeline passou a ser eixo cronologico real por mes;
 - proximo passo opcional: deduplicar ainda mais "Risco operacional", "Saude" e "Inteligencia" conforme surgirem mais sinais reais;

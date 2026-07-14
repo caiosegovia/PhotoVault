@@ -43,6 +43,7 @@ from utils.logging import get_log_path, setup_logging
 
 PROGRESS_PATH = CONFIG_DIR / "progress.json"
 GALLERY_ITEM_LIMIT = 50000
+MAX_GALLERY_PAGE_LIMIT = 50000
 log = logging.getLogger("photovault.bridge")
 
 try:
@@ -281,6 +282,7 @@ def _gallery_items(assets: list[dict], ensure_thumbnails: bool = False) -> list[
 
 def _gallery_payload(
     limit: int = GALLERY_ITEM_LIMIT,
+    offset: int = 0,
     ensure_thumbnails: bool = False,
     include_items: bool = True,
 ) -> dict:
@@ -292,12 +294,18 @@ def _gallery_payload(
     breakdowns = gallery_breakdowns()
     breakdowns_at = time.perf_counter()
     duplicate_savings = duplicate_savings_total()
-    assets = list_gallery_assets(limit) if include_items else []
+    assets = list_gallery_assets(limit, offset=offset) if include_items else []
     assets_at = time.perf_counter()
     items = _gallery_items(assets, ensure_thumbnails=ensure_thumbnails) if include_items else []
     items_at = time.perf_counter()
     return {
         'items': items,
+        'page': {
+            'limit': limit,
+            'offset': offset,
+            'count': len(items),
+            'hasMore': bool(include_items and offset + len(items) < gallery_total['total']),
+        },
         'total': gallery_total['total'],
         'photos': gallery_total['photos'],
         'videos': gallery_total['videos'],
@@ -504,20 +512,28 @@ def files(payload: dict) -> dict:
 
 def gallery(payload: dict) -> dict:
     init_db()
-    limit = int(payload.get('limit') or GALLERY_ITEM_LIMIT)
+    limit = max(1, min(int(payload.get('limit') or GALLERY_ITEM_LIMIT), MAX_GALLERY_PAGE_LIMIT))
+    offset = max(0, int(payload.get('offset') or 0))
     ensure = bool(payload.get('ensureThumbnails'))
-    return _gallery_payload(limit, ensure_thumbnails=ensure)
+    return _gallery_payload(limit, offset=offset, ensure_thumbnails=ensure)
 
 
 def search_gallery(payload: dict) -> dict:
     init_db()
     query = payload.get('query') or ''
-    limit = int(payload.get('limit') or 240)
+    limit = max(1, min(int(payload.get('limit') or 240), MAX_GALLERY_PAGE_LIMIT))
+    offset = max(0, int(payload.get('offset') or 0))
     ensure = bool(payload.get('ensureThumbnails'))
     base = _gallery_payload(0, include_items=False)
-    assets = search_gallery_assets(query, limit=limit)
+    assets = search_gallery_assets(query, limit=limit, offset=offset)
     base['items'] = _gallery_items(assets, ensure_thumbnails=ensure)
-    base['search'] = {'query': query, 'count': len(base['items']), 'limit': limit}
+    base['page'] = {
+        'limit': limit,
+        'offset': offset,
+        'count': len(base['items']),
+        'hasMore': bool(len(base['items']) == limit),
+    }
+    base['search'] = {'query': query, 'count': len(base['items']), 'limit': limit, 'offset': offset}
     return base
 
 

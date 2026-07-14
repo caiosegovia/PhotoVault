@@ -1295,7 +1295,7 @@ def get_asset_instances(asset_id: int) -> list[sqlite3.Row]:
         ).fetchall()
 
 
-def list_gallery_assets(limit: int = 80) -> list[dict]:
+def list_gallery_assets(limit: int = 80, offset: int = 0) -> list[dict]:
     """Return destination assets that make up the current vault gallery."""
     with _get_conn() as conn:
         rows = conn.execute(
@@ -1377,14 +1377,14 @@ def list_gallery_assets(limit: int = 80) -> list[dict]:
                    CASE WHEN a.date_taken IS NULL THEN 1 ELSE 0 END,
                    a.date_taken DESC,
                    ai.id DESC
-               LIMIT ?""",
-            (limit,),
+               LIMIT ? OFFSET ?""",
+            (limit, offset),
         ).fetchall()
     return [dict(row) for row in rows]
 
 
 def _gallery_asset_select(where_sql: str = "", join_sql: str = "", order_sql: str = "", limit: int = 80,
-                          params: Optional[list] = None) -> list[dict]:
+                          offset: int = 0, params: Optional[list] = None) -> list[dict]:
     params = params or []
     with _get_conn() as conn:
         rows = conn.execute(
@@ -1477,8 +1477,8 @@ def _gallery_asset_select(where_sql: str = "", join_sql: str = "", order_sql: st
                {join_sql}
                WHERE ai.role = 'destination' {where_sql}
                {order_sql or "ORDER BY CASE WHEN a.date_taken IS NULL THEN 1 ELSE 0 END, a.date_taken DESC, ai.id DESC"}
-               LIMIT ?""",
-            [*params, limit],
+               LIMIT ? OFFSET ?""",
+            [*params, limit, offset],
         ).fetchall()
     return [dict(row) for row in rows]
 
@@ -1488,11 +1488,11 @@ def _fts_query(value: str) -> str:
     return " ".join(f'"{token}"*' for token in tokens)
 
 
-def search_gallery_assets(query: str, limit: int = 240) -> list[dict]:
+def search_gallery_assets(query: str, limit: int = 240, offset: int = 0) -> list[dict]:
     """Search destination gallery assets through FTS5 with LIKE fallback."""
     term = (query or '').strip()
     if not term:
-        return list_gallery_assets(limit)
+        return list_gallery_assets(limit, offset=offset)
     try:
         return _gallery_asset_select(
             join_sql="JOIN catalog_search ON catalog_search.path = ai.path",
@@ -1500,6 +1500,7 @@ def search_gallery_assets(query: str, limit: int = 240) -> list[dict]:
             order_sql="ORDER BY bm25(catalog_search), CASE WHEN a.date_taken IS NULL THEN 1 ELSE 0 END, a.date_taken DESC",
             params=[_fts_query(term)],
             limit=limit,
+            offset=offset,
         )
     except sqlite3.OperationalError:
         pattern = f"%{term.lower()}%"
@@ -1511,6 +1512,7 @@ def search_gallery_assets(query: str, limit: int = 240) -> list[dict]:
             )""",
             params=[pattern, pattern, pattern],
             limit=limit,
+            offset=offset,
         )
 
 

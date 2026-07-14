@@ -108,8 +108,8 @@ sequenceDiagram
 | `import_insights` | `{ importId }` | grupos por motivo, midia e status. |
 | `update_decision_group` | `{ importId, reason, decision }` | quantidade atualizada e insights. |
 | `execute_import` | `{ planId, verifyMode }` | resultado de ingestao e metricas. |
-| `gallery` | `{ limit, ensureThumbnails }` | itens, totais, facetas, capacidades e timings. |
-| `search_gallery` | `{ query, limit, ensureThumbnails? }` | resultados por FTS5/SQLite com o mesmo formato de `GalleryState`. |
+| `gallery` | `{ limit, offset, ensureThumbnails }` | itens, pagina, totais, facetas, capacidades e timings. |
+| `search_gallery` | `{ query, limit, offset, ensureThumbnails? }` | resultados por FTS5/SQLite com o mesmo formato de `GalleryState`. |
 | `enrich_metadata` | `{ limit }` | resultado do ExifTool e estado atualizado. |
 | `health` | `{}` | saude operacional, imports retomaveis, jobs e insights deterministicas. |
 | `catalog` | `{ assetId }` | tags e notas de curadoria do asset. |
@@ -181,7 +181,7 @@ erDiagram
 
 ## Galeria Explorer E Facetas
 
-`bridge.gallery` monta:
+`bridge.gallery` aceita `limit`, `offset` e `ensureThumbnails`, e monta:
 
 - totais: total, fotos, videos, bytes por tipo, economia por duplicatas, sem data, primeira/ultima data;
 - facetas persistidas: midia, anos, meses, timeline cronologica, extensoes, devices, deviceTypes, cameras;
@@ -191,7 +191,7 @@ erDiagram
 
 No frontend, `galleryFilters.ts` aplica filtros locais por query, midia, extensao, ano, mes, tamanho, problema, deviceType, device, camera e lens.
 
-A Galeria usa uma visualizacao Explorer textual: cada linha mostra nome, tipo/extensao/resolucao, data, dispositivo, tamanho e badges de preview/metadados. O preview visual fica no inspetor lateral quando um item e selecionado. A lista renderiza os resultados filtrados em lotes incrementais de 240 itens. Quando a busca textual tem pelo menos dois caracteres, a UI chama `search_gallery`, que usa `catalog_search` FTS5 com fallback `LIKE`.
+A Galeria usa uma visualizacao Explorer textual: cada linha mostra nome, tipo/extensao/resolucao, data, dispositivo, tamanho e badges de preview/metadados. O preview visual fica no inspetor lateral quando um item e selecionado. A lista renderiza os resultados filtrados em lotes incrementais de 240 itens. O contrato da bridge ja retorna `page.limit`, `page.offset`, `page.count` e `page.hasMore`, preparando paginacao SQLite completa. Quando a busca textual tem pelo menos dois caracteres, a UI chama `search_gallery`, que usa `catalog_search` FTS5 com fallback `LIKE`.
 
 Tags e notas sao salvas em `catalog_tags`, `asset_tags` e `catalog_notes`, e entram no indice textual por `refresh_catalog_search_conn`.
 
@@ -234,9 +234,9 @@ Views principais em `frontend/src/main.tsx`:
 | `logs` | Tail de logs locais. |
 
 O Cockpit tambem mostra um painel de ambiente alimentado por `diagnostics`, incluindo requisitos obrigatorios de desenvolvimento e ferramentas opcionais para previews/metadados.
-O Cockpit mostra tambem uma minibar de Saude da Galeria: metadados pendentes, itens sem data, erros recentes, dependencias, espaco livre, imports retomaveis e insights deterministicas sem modelo externo. A composicao "Na Galeria" agrupa fotos/videos, periodo, importado, duplicatas evitadas e organizacao do acervo.
+O Cockpit mostra uma secao propria de Saude da Galeria: score operacional, metadados pendentes, itens sem data, erros recentes, dependencias, espaco livre, ferramentas disponiveis, imports retomaveis e insights deterministicas sem modelo externo. A composicao "Na Galeria" agrupa fotos/videos, periodo, importado, duplicatas evitadas e organizacao do acervo.
 
-Estados principais:
+Estados principais ficam tipados em `frontend/src/contracts.ts`:
 
 - `BackendState`: estado inicial agregado;
 - `GalleryState`: itens, totais, facetas e capacidades;

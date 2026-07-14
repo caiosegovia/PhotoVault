@@ -44,160 +44,33 @@ import {
   type GalleryFilter,
   type GalleryItem,
 } from "./galleryFilters";
+import type {
+  AssetCatalog,
+  BackendState,
+  Bucket,
+  Decision,
+  DecisionGroup,
+  DiagnosticItem,
+  DiagnosticsState,
+  Disk,
+  DuplicateSavings,
+  GalleryState,
+  HealthState,
+  ImportInsights,
+  ImportItem,
+  ImportStatus,
+  LogState,
+  ProgressInfo,
+  ProgressMetrics,
+  TimelineBucket,
+  Vault,
+  View,
+} from "./contracts";
 import "./styles.css";
-
-type ImportStatus = "ready" | "done" | "running" | "failed";
-type Decision = "import" | "skip" | "review";
-type View = "cockpit" | "gallery" | "import" | "reviews" | "logs";
-
-type ImportItem = {
-  id: number;
-  name: string;
-  status: ImportStatus;
-  rawStatus?: string;
-  date: string;
-  source: string;
-  found: number;
-  fresh: number;
-  duplicates: number;
-  errors: number;
-  bytes: string;
-  bytesNew: number;
-  planId?: number;
-};
-
-type Vault = { id?: number; name: string; path: string; pattern: string; createdAt?: string };
-type Disk = { total: number; used: number; free: number; pending: number };
-
-type Bucket = { label: string; count: number; bytes: string; bytesRaw: number };
-type TimelineBucket = Bucket & { photos?: number; videos?: number };
-type DuplicateSavings = { count: number; bytes: string; bytesRaw: number };
-type GalleryBreakdowns = { media: Bucket[]; years: Bucket[]; months: Bucket[]; timeline?: TimelineBucket[]; extensions: Bucket[]; deviceTypes?: Bucket[]; devices?: Bucket[]; cameras?: Bucket[] };
-type GalleryState = {
-  items: GalleryItem[];
-  total: number;
-  photos: number;
-  videos: number;
-  withoutDate: number;
-  bytes: string;
-  bytesTotal: number;
-  photoBytes: string;
-  photoBytesTotal: number;
-  videoBytes: string;
-  videoBytesTotal: number;
-  firstDate: string;
-  lastDate: string;
-  yearCount: number;
-  monthCount: number;
-  extensionCount: number;
-  duplicateSavings: DuplicateSavings;
-  breakdowns: GalleryBreakdowns;
-  capabilities?: {
-    ffmpegAvailable?: boolean;
-    exiftoolAvailable?: boolean;
-    exiftoolVersion?: string;
-    exiftoolStatus?: { available?: boolean; path?: string; reason?: string };
-  };
-  processing?: { exiftool?: Record<string, number | string> };
-  timings?: Record<string, number>;
-  search?: { query: string; count: number; limit: number };
-};
-
-type DecisionGroup = {
-  reason: string;
-  label: string;
-  decision: Decision;
-  mediaType: string;
-  status: string;
-  count: number;
-  bytes: string;
-  bytesRaw: number;
-};
-type ImportInsights = { reasonGroups: DecisionGroup[]; mediaGroups: Bucket[]; statusGroups: Bucket[] };
-type ProgressInfo = {
-  stage: string;
-  message: string;
-  current: number;
-  total: number;
-  path: string;
-  status: string;
-  metrics?: ProgressMetrics;
-  updatedAt?: number;
-  logPath?: string;
-};
-type ProgressMetrics = {
-  elapsedSeconds?: number;
-  etaSeconds?: number;
-  throughputMbps?: number;
-  bytesImported?: number;
-  filesCopied?: number;
-  filesSkipped?: number;
-  filesErrored?: number;
-  lastFileMbps?: number;
-  lastFileSeconds?: number;
-  largestFile?: CopyFileMetric;
-  slowestFile?: CopyFileMetric;
-};
-type CopyFileMetric = { path: string; bytes: number; seconds: number; mbps: number };
-type DiagnosticItem = {
-  label: string;
-  available: boolean;
-  required: boolean;
-  path: string;
-  version?: string;
-  status: "ok" | "warning" | "error";
-  detail?: string;
-};
-type DiagnosticsState = {
-  status: "ok" | "warning" | "error";
-  summary: string;
-  requiredMissing: number;
-  optionalMissing: number;
-  tools: DiagnosticItem[];
-  paths: DiagnosticItem[];
-  platform?: { system?: string; release?: string; machine?: string };
-};
-type CatalogNote = { id: number; note_type: string; source: string; body: string; created_at: string };
-type AssetCatalog = { assetId: number; tags: string[]; notes: CatalogNote[] };
-type HealthInsight = { title: string; detail: string; action: string };
-type ResumableImport = {
-  id: number;
-  name: string;
-  source_path: string;
-  status: string;
-  ingest_plan_id: number;
-  operations: number;
-  resumable: number;
-  done: number;
-  errors: number;
-};
-type HealthState = {
-  total: number;
-  withoutDate: number;
-  largeVideos: number;
-  missingPath: number;
-  metadataPending: number;
-  openImports: number;
-  processing?: Record<string, number>;
-  resumableImports?: ResumableImport[];
-  jobs?: Record<string, Record<string, number>>;
-  insights?: HealthInsight[];
-};
-type BackendState = {
-  vault: Vault;
-  imports: ImportItem[];
-  importInsights: ImportInsights;
-  gallery: GalleryState;
-  disk: Disk;
-  progress?: ProgressInfo;
-  diagnostics?: DiagnosticsState;
-  health?: HealthState;
-  logPath?: string;
-};
-type LogState = { logPath: string; lines: string[] };
 
 const EMPTY_GALLERY: GalleryState = {
   items: [],
+  page: { limit: 0, offset: 0, count: 0, hasMore: false },
   total: 0,
   photos: 0,
   videos: 0,
@@ -1172,7 +1045,7 @@ function CockpitView({
 
   return (
     <div className="view-stack">
-      <HealthMiniBar
+      <GalleryHealthSection
         diagnostics={diagnostics}
         health={health}
         gallery={gallery}
@@ -1180,6 +1053,8 @@ function CockpitView({
         selectedImport={selectedImport}
         errors={errorTotal}
         issues={healthIssues}
+        onFilter={onFilter}
+        onView={onView}
         onHealth={onHealth}
       />
 
@@ -1276,7 +1151,7 @@ function formatDateShort(value?: string) {
   return year && month && day ? `${day}/${month}/${year}` : date;
 }
 
-function HealthMiniBar({
+function GalleryHealthSection({
   diagnostics,
   health,
   gallery,
@@ -1284,6 +1159,8 @@ function HealthMiniBar({
   selectedImport,
   errors,
   issues,
+  onFilter,
+  onView,
   onHealth,
 }: {
   diagnostics: DiagnosticsState;
@@ -1293,37 +1170,78 @@ function HealthMiniBar({
   selectedImport: ImportItem | null;
   errors: number;
   issues: string[];
+  onFilter: (filter: Partial<GalleryFilter>) => void;
+  onView: (view: View) => void;
   onHealth: () => void;
 }) {
-  const [open, setOpen] = React.useState(false);
   const freePct = disk.total ? Math.round((disk.free / disk.total) * 100) : 0;
-  const tone = diagnostics.status === "error" || errors || freePct < 10 ? "bad" : issues.length ? "warn" : "good";
+  const hardIssues = [
+    diagnostics.requiredMissing,
+    errors,
+    freePct > 0 && freePct < 10 ? 1 : 0,
+    health.resumableImports?.length ?? 0,
+  ].filter(Boolean).length;
+  const warningIssues = [
+    health.metadataPending,
+    health.withoutDate,
+    health.largeVideos,
+    diagnostics.optionalMissing,
+  ].filter(Boolean).length;
+  const score = Math.max(0, 100 - hardIssues * 22 - warningIssues * 8);
+  const tone = hardIssues ? "bad" : warningIssues || issues.length ? "warn" : "good";
   const summary = issues.length ? issues.slice(0, 3).join(" | ") : "Sem alertas principais";
   return (
-    <div className="health-minibar-wrap">
-      <button className={`health-minibar ${tone}`} onClick={() => { setOpen((value) => !value); onHealth(); }}>
-        <div>
-          <Gauge size={16} />
-          <strong>Saude da galeria</strong>
-          <span>{summary}</span>
+    <section className={`gallery-health-section ${tone}`}>
+      <div className="gallery-health-main">
+        <div className="health-score">
+          <Gauge size={20} />
+          <span>Saude da galeria</span>
+          <strong>{score}</strong>
+          <em>{summary}</em>
         </div>
-        <b>{selectedImport ? statusLabel(selectedImport.status) : "Sem job"}</b>
-        <b>{gallery.capabilities?.ffmpegAvailable ? "ffmpeg OK" : "ffmpeg ausente"}</b>
-        <b>{gallery.capabilities?.exiftoolAvailable ? "ExifTool OK" : "ExifTool pendente"}</b>
-        <b>{formatBytes(disk.free)} livres</b>
-        <em>{open ? "Ocultar" : "Detalhar"}</em>
-      </button>
-      {open ? (
-        <div className="health-minibar-detail">
-          <Signal label="Metadados pendentes" value={formatNumber(health.metadataPending || 0)} />
-          <Signal label="Sem data de captura" value={formatNumber(health.withoutDate || 0)} />
-          <Signal label="Erros recentes" value={formatNumber(errors)} />
-          <Signal label="Dependencias" value={diagnostics.requiredMissing ? `${formatNumber(diagnostics.requiredMissing)} pendente(s)` : "OK"} />
-          <Signal label="Espaco livre" value={`${formatBytes(disk.free)} (${freePct}%)`} />
+        <div className="health-signal-grid">
+          <Signal label="Espaco livre" value={`${formatBytes(disk.free)} (${freePct}%)`} tone={freePct > 15 ? "good" : "bad"} />
+          <Signal label="Metadados pendentes" value={formatNumber(health.metadataPending || 0)} tone={health.metadataPending ? "bad" : "good"} />
+          <Signal label="Sem data de captura" value={formatNumber(health.withoutDate || 0)} tone={health.withoutDate ? "bad" : "good"} />
           <Signal label="Ultimo job" value={selectedImport ? statusLabel(selectedImport.status) : "Sem job ativo"} />
+          <Signal label="Dependencias" value={diagnostics.requiredMissing ? `${formatNumber(diagnostics.requiredMissing)} pendente(s)` : "OK"} tone={diagnostics.requiredMissing ? "bad" : "good"} />
+          <Signal label="Erros recentes" value={formatNumber(errors)} tone={errors ? "bad" : "good"} />
+        </div>
+      </div>
+      <div className="health-action-row">
+        <button className="secondary" onClick={onHealth}><RotateCcw size={15} /> Atualizar saude</button>
+        <button className="secondary" onClick={() => onFilter({ problem: "without-date" })}><CalendarDays size={15} /> Sem data</button>
+        <button className="secondary" onClick={() => onFilter({ problem: "video", size: "large" })}><Film size={15} /> Videos grandes</button>
+        <button className="secondary" onClick={() => onView("reviews")}><ListChecks size={15} /> Jobs e revisoes</button>
+      </div>
+      <div className="health-detail-grid">
+        <HealthStatusCard icon={gallery.capabilities?.ffmpegAvailable ? CheckCircle2 : AlertTriangle} label="ffmpeg" value={gallery.capabilities?.ffmpegAvailable ? "Disponivel" : "Ausente"} tone={gallery.capabilities?.ffmpegAvailable ? "good" : "bad"} detail="Previews e videos dependem desta ferramenta." />
+        <HealthStatusCard icon={gallery.capabilities?.exiftoolAvailable ? CheckCircle2 : AlertTriangle} label="ExifTool" value={gallery.capabilities?.exiftoolAvailable ? "Disponivel" : "Pendente"} tone={gallery.capabilities?.exiftoolAvailable ? "good" : "warn"} detail={exiftoolStatusDetail(gallery)} />
+        <HealthStatusCard icon={HardDrive} label="Capacidade" value={formatBytes(disk.free)} tone={freePct > 15 ? "good" : "bad"} detail="Espaco disponivel no destino da galeria." />
+        <HealthStatusCard icon={Database} label="Catalogo" value={formatNumber(gallery.total)} tone={gallery.total ? "good" : "warn"} detail={`${formatNumber(gallery.photos)} fotos | ${formatNumber(gallery.videos)} videos`} />
+      </div>
+      {(health.insights ?? []).length ? (
+        <div className="health-insight-strip">
+          {(health.insights ?? []).slice(0, 3).map((item) => (
+            <article key={item.title}>
+              <strong>{item.title}</strong>
+              <span>{item.detail}</span>
+            </article>
+          ))}
         </div>
       ) : null}
-    </div>
+    </section>
+  );
+}
+
+function HealthStatusCard({ icon: Icon, label, value, detail, tone }: { icon: React.ElementType; label: string; value: string; detail: string; tone: "good" | "warn" | "bad" }) {
+  return (
+    <article className={`health-status-card ${tone}`}>
+      <Icon size={17} />
+      <span>{label}</span>
+      <strong>{value}</strong>
+      <em>{detail}</em>
+    </article>
   );
 }
 

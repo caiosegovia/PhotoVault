@@ -21,7 +21,7 @@ O fluxo funcional cobre:
 - buscar no catalogo usando FTS5 do SQLite quando ha texto de busca;
 - renderizar a lista Explorer da galeria em lotes incrementais para manter a UI responsiva;
 - registrar tags e notas de curadoria por asset;
-- acompanhar saude da galeria em minibar clicavel, imports retomaveis e insights deterministicas no Cockpit;
+- acompanhar saude da galeria em uma secao propria no Cockpit, com score operacional, imports retomaveis e insights deterministicas;
 - abrir ou localizar arquivos no Explorer;
 - visualizar Cockpit com composicao da galeria, storage disponivel, economia por duplicatas, importacoes recentes, timeline real, facetas e sinais operacionais;
 - diagnosticar ambiente local: Python, Node/npm, Cargo, ffmpeg, ffprobe, ExifTool e paths do app;
@@ -281,7 +281,7 @@ A suite atual cobre:
 - A galeria passou a usar busca FTS5 para texto, visualizacao Explorer incremental, tags/notas e painel de saude.
 - A grade visual de cards foi substituida por lista Explorer textual; previews ficam no painel lateral sob selecao.
 - O cache de thumbnails passou a ser versionado para evitar reaproveitar previews antigos com regra visual defasada.
-- O Cockpit foi remodelado com minibar de saude, quadrante "Na Galeria", timeline real, organizacao do acervo e economia acumulada por duplicatas evitadas.
+- O Cockpit foi remodelado com secao de saude, quadrante "Na Galeria", timeline real, organizacao do acervo e economia acumulada por duplicatas evitadas.
 
 ## Pendencias Conhecidas
 

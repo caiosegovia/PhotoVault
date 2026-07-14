@@ -50,6 +50,13 @@ export type GalleryItem = {
   latestNote?: string;
 };
 
+export type GalleryPage = {
+  limit: number;
+  offset: number;
+  count: number;
+  hasMore: boolean;
+};
+
 export const RAW_EXTENSIONS = new Set(["cr2", "cr3", "nef", "arw", "dng", "raf", "rw2", "orf"]);
 const VIDEO_TYPES = new Set(["video", "movie"]);
 const VIDEO_EXTENSIONS = new Set(["mp4", "mov", "m4v", "avi", "mkv", "3gp", "wmv", "mts", "m2ts"]);
