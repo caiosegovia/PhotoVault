@@ -2136,7 +2136,7 @@ h1 {
 
 .job-row {
   display: grid;
-  grid-template-columns: minmax(210px, 0.75fr) minmax(0, 1fr);
+  grid-template-columns: minmax(210px, 0.7fr) minmax(0, 1fr) auto;
   gap: 12px;
   align-items: center;
 }
@@ -2165,6 +2165,19 @@ h1 {
 .job-row p {
   margin: 0;
   color: var(--muted);
+  font-size: 12px;
+}
+
+.job-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.job-actions button {
+  min-height: 30px;
+  padding: 0 8px;
   font-size: 12px;
 }
 
@@ -2969,5 +2982,9 @@ h1 {
 
   .job-row {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .job-actions {
+    justify-content: flex-start;
   }
 }

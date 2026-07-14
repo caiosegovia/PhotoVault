@@ -1723,6 +1723,48 @@ def finish_background_job(job_id: int, status: str = 'done', payload: Optional[d
         )
 
 
+def get_background_job(job_id: int) -> Optional[dict]:
+    with _get_conn() as conn:
+        row = conn.execute(
+            """SELECT id, kind, status, entity_type, entity_id, payload, created_at, started_at, completed_at, updated_at, error
+               FROM background_jobs
+               WHERE id=?""",
+            (job_id,),
+        ).fetchone()
+    if not row:
+        return None
+    item = dict(row)
+    try:
+        item['payload'] = json.loads(item.get('payload') or '{}')
+    except json.JSONDecodeError:
+        item['payload'] = {}
+    return item
+
+
+def update_background_job_status(job_id: int, status: str, error: str = "") -> dict:
+    if status not in {'queued', 'running', 'paused', 'done', 'warning', 'error', 'failed', 'cancelled'}:
+        raise ValueError('Status de job invalido')
+    now = datetime.now().isoformat()
+    completed_at = now if status in {'done', 'warning', 'error', 'failed', 'cancelled'} else None
+    with _get_conn() as conn:
+        row = conn.execute("SELECT status FROM background_jobs WHERE id=?", (job_id,)).fetchone()
+        if not row:
+            raise ValueError('Job nao encontrado')
+        current = row['status']
+        if current in {'done', 'warning', 'error', 'failed', 'cancelled'}:
+            raise ValueError('Job ja finalizado')
+        conn.execute(
+            """UPDATE background_jobs
+               SET status=?, error=COALESCE(NULLIF(?, ''), error), completed_at=COALESCE(?, completed_at), updated_at=?
+               WHERE id=?""",
+            (status, error or '', completed_at, now, job_id),
+        )
+    job = get_background_job(job_id)
+    if not job:
+        raise ValueError('Job nao encontrado')
+    return job
+
+
 def list_background_jobs(limit: int = 12) -> list[dict]:
     with _get_conn() as conn:
         rows = conn.execute(

@@ -33,10 +33,14 @@ import {
   Video,
 } from "lucide-react";
 import {
+  DEFAULT_GALLERY_FILTER,
+  galleryFilterKey,
   hasMissingPreview,
   isRaw,
   isVideo,
   itemYear,
+  mergeGalleryFilter,
+  normalizeGalleryFilter,
   normalizeCameraName,
   normalizeExtension,
   normalizeMedia,
@@ -111,19 +115,7 @@ const EMPTY_HEALTH: HealthState = {
   jobs: {},
   insights: [],
 };
-const DEFAULT_FILTER: GalleryFilter = {
-  media: "all",
-  year: "all",
-  month: "all",
-  extension: "all",
-  deviceType: "all",
-  device: "all",
-  camera: "all",
-  lens: "all",
-  size: "all",
-  query: "",
-  problem: "all",
-};
+const DEFAULT_FILTER = DEFAULT_GALLERY_FILTER;
 
 function readStoredView(): View {
   try {
@@ -137,7 +129,7 @@ function readStoredView(): View {
 function readStoredFilter(): GalleryFilter {
   try {
     const raw = window.localStorage.getItem("photovault.galleryFilter");
-    return raw ? { ...DEFAULT_FILTER, ...JSON.parse(raw) } : DEFAULT_FILTER;
+    return raw ? normalizeGalleryFilter(JSON.parse(raw)) : DEFAULT_FILTER;
   } catch {
     return DEFAULT_FILTER;
   }
@@ -342,6 +334,9 @@ function App() {
   const progressTimerRef = React.useRef<number | null>(null);
   const galleryLoadingRef = React.useRef(false);
   const galleryRefreshQueuedRef = React.useRef<{ ensureThumbnails: boolean } | null>(null);
+  const latestGalleryFilterRef = React.useRef(filter);
+  const latestGallerySortRef = React.useRef(gallerySort);
+  const galleryRequestSeqRef = React.useRef(0);
   const catalogRequestRef = React.useRef(0);
 
   const selectedImport = imports.find((item) => item.id === selectedImportId) ?? imports[0] ?? null;
@@ -365,7 +360,12 @@ function App() {
     } catch {
       // Preferences are best-effort only.
     }
+    latestGalleryFilterRef.current = filter;
   }, [filter]);
+
+  React.useEffect(() => {
+    latestGallerySortRef.current = gallerySort;
+  }, [gallerySort]);
 
   React.useEffect(() => {
     if (activeView === "logs") refreshLogs();
@@ -466,6 +466,10 @@ function App() {
       galleryRefreshQueuedRef.current = { ensureThumbnails: galleryRefreshQueuedRef.current?.ensureThumbnails || ensureThumbnails };
       return;
     }
+    const requestId = ++galleryRequestSeqRef.current;
+    const filterSnapshot = latestGalleryFilterRef.current;
+    const sortSnapshot = latestGallerySortRef.current;
+    const filterSnapshotKey = galleryFilterKey(filterSnapshot);
     galleryLoadingRef.current = true;
     setGalleryBusy(true);
     setThumbsBusy(ensureThumbnails);
@@ -473,13 +477,20 @@ function App() {
       const result = await callBridge<GalleryState>("gallery", {
         limit: GALLERY_PAGE_SIZE,
         offset: 0,
-        filter,
-        query: filter.query.trim(),
-        sort: gallerySort,
+        filter: filterSnapshot,
+        query: filterSnapshot.query.trim(),
+        sort: sortSnapshot,
         ensureThumbnails,
       });
+      const stillLatest = requestId === galleryRequestSeqRef.current
+        && filterSnapshotKey === galleryFilterKey(latestGalleryFilterRef.current)
+        && sortSnapshot === latestGallerySortRef.current;
+      if (!stillLatest) {
+        galleryRefreshQueuedRef.current = { ensureThumbnails: galleryRefreshQueuedRef.current?.ensureThumbnails || ensureThumbnails };
+        return;
+      }
       setGallery(result);
-      setSelectedGalleryId((current) => current ?? result.items[0]?.id ?? null);
+      setSelectedGalleryId((current) => result.items.some((item) => item.id === current) ? current : result.items[0]?.id ?? null);
       setMessage(ensureThumbnails ? "Previews atualizados." : "Galeria atualizada.");
     } catch (error) {
       setMessage(`Erro ao atualizar galeria: ${String(error)}`);
@@ -496,15 +507,17 @@ function App() {
   async function loadMoreGallery() {
     if (galleryLoadingRef.current) return;
     if (!gallery.page?.hasMore) return;
+    const filterSnapshot = latestGalleryFilterRef.current;
+    const sortSnapshot = latestGallerySortRef.current;
     galleryLoadingRef.current = true;
     setGalleryBusy(true);
     try {
       const result = await callBridge<GalleryState>("gallery", {
         limit: GALLERY_PAGE_SIZE,
         offset: gallery.items.length,
-        filter,
-        query: filter.query.trim(),
-        sort: gallerySort,
+        filter: filterSnapshot,
+        query: filterSnapshot.query.trim(),
+        sort: sortSnapshot,
       });
       setGallery((current) => ({
         ...result,
@@ -547,6 +560,17 @@ function App() {
       setMessage("Saude da galeria atualizada.");
     } catch (error) {
       setMessage(`Erro ao atualizar saude: ${String(error)}`);
+    }
+  }
+
+  async function controlJob(jobId: number, action: "pause" | "resume" | "cancel") {
+    try {
+      const result = await callBridge<{ ok: boolean; health: HealthState }>("job_control", { jobId, action });
+      setHealth(result.health ?? health);
+      await refreshProgress();
+      setMessage(action === "pause" ? "Job pausado." : action === "resume" ? "Job retomado." : "Job cancelado.");
+    } catch (error) {
+      setMessage(`Erro ao controlar job: ${String(error)}`);
     }
   }
 
@@ -858,35 +882,8 @@ function App() {
 
   function patchFilter(next: Partial<GalleryFilter>) {
     setFilter((current) => {
-      const merged = { ...current, ...next };
-      if (
-        next.media !== undefined ||
-        next.year !== undefined ||
-        next.extension !== undefined ||
-        next.device !== undefined ||
-        next.lens !== undefined ||
-        next.size !== undefined
-      ) {
-        merged.month = next.month ?? "all";
-      }
-      if (next.year !== undefined && next.year === "all") merged.month = "all";
-      if (next.month !== undefined && next.month !== "all") merged.year = next.month.slice(0, 4);
-      if (next.device !== undefined) {
-        merged.deviceType = "all";
-        merged.camera = "all";
-        merged.lens = "all";
-      }
-      if (next.camera !== undefined) {
-        merged.device = "all";
-        merged.lens = "all";
-      }
-      if (next.lens !== undefined) {
-        merged.device = "all";
-        merged.camera = "all";
-      }
-      if (next.media !== undefined || next.year !== undefined || next.extension !== undefined || next.device !== undefined || next.camera !== undefined || next.lens !== undefined || next.size !== undefined) {
-        merged.problem = next.problem ?? "all";
-      }
+      const merged = mergeGalleryFilter(current, next);
+      latestGalleryFilterRef.current = merged;
       return merged;
     });
     setActiveView("gallery");
@@ -977,8 +974,14 @@ function App() {
             thumbsBusy={thumbsBusy}
             enrichBusy={enrichBusy}
             onFilter={patchFilter}
-            onSort={setGallerySort}
-            onClear={() => setFilter(DEFAULT_FILTER)}
+            onSort={(sort) => {
+              latestGallerySortRef.current = sort;
+              setGallerySort(sort);
+            }}
+            onClear={() => {
+              latestGalleryFilterRef.current = DEFAULT_FILTER;
+              setFilter(DEFAULT_FILTER);
+            }}
             onSelect={setSelectedGalleryId}
             onRefresh={() => refreshGallery(false)}
             onLoadMore={loadMoreGallery}
@@ -1042,6 +1045,7 @@ function App() {
             }}
             onDismissProgress={dismissProgress}
             onViewLogs={() => setActiveView("logs")}
+            onJobAction={controlJob}
           />
         ) : null}
 
@@ -1914,6 +1918,7 @@ function JobsView({
   onRefresh,
   onDismissProgress,
   onViewLogs,
+  onJobAction,
 }: {
   health: HealthState;
   progress: ProgressInfo | null;
@@ -1922,13 +1927,16 @@ function JobsView({
   onRefresh: () => void;
   onDismissProgress: () => void;
   onViewLogs: () => void;
+  onJobAction: (jobId: number, action: "pause" | "resume" | "cancel") => void;
 }) {
   const recentJobs = health.recentJobs ?? [];
   const summary = Object.entries(health.jobs ?? {}).flatMap(([kind, statuses]) =>
     Object.entries(statuses).map(([status, count]) => ({ kind, status, count })),
   );
   const running = summary.filter((item) => item.status === "running").reduce((sum, item) => sum + item.count, 0);
+  const paused = summary.filter((item) => item.status === "paused").reduce((sum, item) => sum + item.count, 0);
   const failures = summary.filter((item) => ["error", "failed"].includes(item.status)).reduce((sum, item) => sum + item.count, 0);
+  const cancelled = summary.filter((item) => item.status === "cancelled").reduce((sum, item) => sum + item.count, 0);
   const completed = summary.filter((item) => item.status === "done").reduce((sum, item) => sum + item.count, 0);
   return (
     <section className="jobs-layout">
@@ -1936,9 +1944,10 @@ function JobsView({
         <SectionTitle eyebrow="Fila operacional" title="Jobs da galeria" action="Atualizar" onAction={onRefresh} />
         <div className="job-summary-grid">
           <BigNumber label="Rodando" value={formatNumber(running)} detail="processos ativos agora" />
+          <BigNumber label="Pausados" value={formatNumber(paused)} detail="aguardando retomada" />
           <BigNumber label="Concluidos" value={formatNumber(completed)} detail="historico registrado" />
+          <BigNumber label="Cancelados" value={formatNumber(cancelled)} detail="interrompidos pelo usuario" />
           <BigNumber label="Falhas" value={formatNumber(failures)} detail="precisam revisao" />
-          <BigNumber label="Log" value={logPath ? "Ativo" : "Sem log"} detail={logPath || "arquivo nao carregado"} />
         </div>
         {progressVisible ? (
           <div className="job-live-progress">
@@ -1966,7 +1975,7 @@ function JobsView({
       <div className="panel span-2">
         <SectionTitle eyebrow="Historico" title="Ultimas execucoes" action="Abrir logs" onAction={onViewLogs} />
         <div className="job-list">
-          {recentJobs.map((job) => <JobRow key={job.id} job={job} />)}
+          {recentJobs.map((job) => <JobRow key={job.id} job={job} onAction={onJobAction} />)}
           {!recentJobs.length ? <EmptyState text="Sem jobs no historico local." /> : null}
         </div>
       </div>
@@ -1974,7 +1983,10 @@ function JobsView({
   );
 }
 
-function JobRow({ job }: { job: BackgroundJob }) {
+function JobRow({ job, onAction }: { job: BackgroundJob; onAction: (jobId: number, action: "pause" | "resume" | "cancel") => void }) {
+  const canPause = ["running", "queued"].includes(job.status);
+  const canResume = job.status === "paused";
+  const canCancel = ["running", "queued", "paused"].includes(job.status);
   return (
     <article className={`job-row ${job.status}`}>
       <div>
@@ -1983,6 +1995,11 @@ function JobRow({ job }: { job: BackgroundJob }) {
         <em>{formatJobTime(job.updated_at || job.completed_at || job.started_at || job.created_at)}</em>
       </div>
       <p>{job.error || jobPayloadSummary(job.payload) || `${job.entity_type || "galeria"} ${job.entity_id ?? ""}`}</p>
+      <div className="job-actions">
+        {canPause ? <button className="secondary" onClick={() => onAction(job.id, "pause")}><Clock3 size={14} /> Pausar</button> : null}
+        {canResume ? <button className="secondary" onClick={() => onAction(job.id, "resume")}><Play size={14} /> Retomar</button> : null}
+        {canCancel ? <button className="danger" onClick={() => onAction(job.id, "cancel")}><Trash2 size={14} /> Cancelar</button> : null}
+      </div>
     </article>
   );
 }
@@ -1992,7 +2009,7 @@ function jobKindLabel(value?: string) {
 }
 
 function jobStatusLabel(value?: string) {
-  return { running: "Rodando", done: "Concluido", warning: "Aviso", error: "Erro", failed: "Falhou" }[value || ""] ?? (value || "Pendente");
+  return { queued: "Na fila", running: "Rodando", paused: "Pausado", done: "Concluido", warning: "Aviso", error: "Erro", failed: "Falhou", cancelled: "Cancelado" }[value || ""] ?? (value || "Pendente");
 }
 
 function jobPayloadSummary(payload?: Record<string, unknown>) {

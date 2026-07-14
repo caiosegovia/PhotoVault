@@ -57,6 +57,20 @@ export type GalleryPage = {
   hasMore: boolean;
 };
 
+export const DEFAULT_GALLERY_FILTER: GalleryFilter = {
+  media: "all",
+  year: "all",
+  month: "all",
+  extension: "all",
+  deviceType: "all",
+  device: "all",
+  camera: "all",
+  lens: "all",
+  size: "all",
+  query: "",
+  problem: "all",
+};
+
 export const RAW_EXTENSIONS = new Set(["cr2", "cr3", "nef", "arw", "dng", "raf", "rw2", "orf"]);
 const VIDEO_TYPES = new Set(["video", "movie"]);
 const VIDEO_EXTENSIONS = new Set(["mp4", "mov", "m4v", "avi", "mkv", "3gp", "wmv", "mts", "m2ts"]);
@@ -75,6 +89,60 @@ export function normalizeMedia(value?: string) {
 
 export function normalizeFacet(value?: string) {
   return clean(value).toLowerCase();
+}
+
+function allIfEmpty(value?: string) {
+  const cleaned = clean(value);
+  return cleaned ? cleaned : "all";
+}
+
+export function normalizeGalleryFilter(filter: Partial<GalleryFilter>): GalleryFilter {
+  const merged = { ...DEFAULT_GALLERY_FILTER, ...filter };
+  return {
+    media: normalizeMedia(merged.media) || "all",
+    year: allIfEmpty(merged.year),
+    month: allIfEmpty(merged.month),
+    extension: normalizeExtension(merged.extension) || "all",
+    deviceType: normalizeFacet(merged.deviceType) || "all",
+    device: allIfEmpty(merged.device),
+    camera: allIfEmpty(merged.camera),
+    lens: allIfEmpty(merged.lens),
+    size: (allIfEmpty(merged.size) as GalleryFilter["size"]),
+    query: merged.query ?? "",
+    problem: (allIfEmpty(merged.problem) as GalleryFilter["problem"]),
+  };
+}
+
+export function mergeGalleryFilter(current: GalleryFilter, patch: Partial<GalleryFilter>): GalleryFilter {
+  const next = normalizeGalleryFilter({ ...current, ...patch });
+  if (patch.month !== undefined && next.month !== "all") {
+    next.year = next.month.slice(0, 4);
+  }
+  if (patch.year !== undefined) {
+    if (next.year === "all") {
+      next.month = "all";
+    } else if (patch.month === undefined && next.month !== "all" && next.month.slice(0, 4) !== next.year) {
+      next.month = "all";
+    }
+  }
+  return next;
+}
+
+export function galleryFilterKey(filter: GalleryFilter) {
+  const normalized = normalizeGalleryFilter(filter);
+  return [
+    normalized.media,
+    normalized.year,
+    normalized.month,
+    normalized.extension,
+    normalized.deviceType,
+    normalized.device,
+    normalized.camera,
+    normalized.lens,
+    normalized.size,
+    normalized.problem,
+    normalized.query.trim(),
+  ].join("\u001f");
 }
 
 export function normalizeCameraName(make?: string, model?: string, fallback?: string) {

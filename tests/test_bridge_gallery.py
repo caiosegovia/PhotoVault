@@ -67,6 +67,31 @@ def test_gallery_payload_lists_assets_once_after_backfill(monkeypatch):
     assert result['items'][0]['deviceName'] == 'Canon R6'
 
 
+def test_job_control_lifecycle_updates_background_job(tmp_path, monkeypatch):
+    import bridge
+    import core.database as database
+
+    monkeypatch.setattr(database, 'DB_PATH', tmp_path / 'database.db')
+    database.init_db()
+    job_id = database.start_background_job('import', 'plan', 42, {'verifyMode': 'size'})
+
+    paused = bridge.job_control({'jobId': job_id, 'action': 'pause'})
+    assert paused['job']['status'] == 'paused'
+
+    resumed = bridge.job_control({'jobId': job_id, 'action': 'resume'})
+    assert resumed['job']['status'] == 'running'
+
+    cancelled = bridge.job_control({'jobId': job_id, 'action': 'cancel'})
+    assert cancelled['job']['status'] == 'cancelled'
+
+    try:
+        bridge.job_control({'jobId': job_id, 'action': 'resume'})
+    except ValueError as exc:
+        assert 'finalizado' in str(exc)
+    else:
+        raise AssertionError('cancelled job should not resume')
+
+
 def test_state_returns_gallery_summary_without_loading_items(monkeypatch):
     import bridge
 

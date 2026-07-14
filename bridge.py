@@ -16,6 +16,8 @@ from core.database import (
     gallery_totals,
     duplicate_savings_total,
     get_asset_catalog,
+    get_background_job,
+    get_import_by_plan,
     get_import_files,
     get_latest_vault,
     init_db,
@@ -31,7 +33,10 @@ from core.database import (
     search_gallery_assets,
     start_background_job,
     summarize_import_decisions,
+    update_background_job_status,
     update_import_file_decision,
+    update_import_status,
+    update_ingest_plan_status,
 )
 from core.imports import create_import_analysis
 from core.ingestion import execute_ingest_plan
@@ -725,6 +730,28 @@ def execute_import(payload: dict) -> dict:
 
     def on_progress(current: int, total: int, src: Path, metrics: dict | None = None) -> None:
         nonlocal last_file_mbps, last_file_seconds
+        if (metrics or {}).get('event') == 'paused':
+            _write_progress(
+                'execution',
+                'Importacao pausada. Retome em Jobs para continuar.',
+                current=current,
+                total=total,
+                path=str(src),
+                status='paused',
+                metrics=metrics or {},
+            )
+            return
+        if (metrics or {}).get('event') == 'cancelled':
+            _write_progress(
+                'execution',
+                'Importacao cancelada pelo usuario.',
+                current=current,
+                total=total,
+                path=str(src),
+                status='cancelled',
+                metrics=metrics or {},
+            )
+            return
         if current not in {0, total - 1} and current % 10 != 0 and (metrics or {}).get('event') not in {'error'}:
             return
         elapsed = max(time.perf_counter() - execution_started, 0.001)
@@ -759,8 +786,13 @@ def execute_import(payload: dict) -> dict:
         )
 
     verify_mode = payload.get('verifyMode') or 'size'
+
+    def control_state() -> str:
+        job = get_background_job(job_id)
+        return (job or {}).get('status') or 'running'
+
     try:
-        result = execute_ingest_plan(int(plan_id), callback=on_progress, verify_mode=verify_mode)
+        result = execute_ingest_plan(int(plan_id), callback=on_progress, control=control_state, verify_mode=verify_mode)
     except Exception as exc:
         _write_progress(
             'execution',
@@ -777,11 +809,14 @@ def execute_import(payload: dict) -> dict:
         )
         finish_background_job(job_id, 'error', error=str(exc))
         raise
-    final_status = 'done' if result.get('errors', 0) == 0 else 'error'
-    finish_background_job(job_id, final_status, result, '' if final_status == 'done' else f"{result.get('errors', 0)} erro(s)")
+    final_status = 'cancelled' if result.get('cancelled') else ('done' if result.get('errors', 0) == 0 else 'error')
+    finish_background_job(job_id, final_status, result, f"{result.get('errors', 0)} erro(s)" if final_status == 'error' else '')
+    final_message = 'Execucao cancelada.' if final_status == 'cancelled' else (
+        f'Execucao concluida: {result.get("processed", 0)} copiados, {result.get("skipped", 0)} ignorados, {result.get("errors", 0)} erros em {result.get("total_seconds", 0):.1f}s ({result.get("throughput_mbps", 0):.1f} MB/s).'
+    )
     _write_progress(
         'execution',
-        f'Execucao concluida: {result.get("processed", 0)} copiados, {result.get("skipped", 0)} ignorados, {result.get("errors", 0)} erros em {result.get("total_seconds", 0):.1f}s ({result.get("throughput_mbps", 0):.1f} MB/s).',
+        final_message,
         current=result.get('total', 0),
         total=result.get('total', 0),
         status=final_status,
@@ -835,6 +870,42 @@ def diagnostics(_payload: dict) -> dict:
     return environment_diagnostics()
 
 
+def job_control(payload: dict) -> dict:
+    init_db()
+    job_id = int(payload.get('jobId') or 0)
+    action = (payload.get('action') or '').lower()
+    if not job_id:
+        raise ValueError('jobId obrigatorio')
+    job = get_background_job(job_id)
+    if not job:
+        raise ValueError('Job nao encontrado')
+    status = job.get('status')
+    if status in {'done', 'warning', 'error', 'failed', 'cancelled'}:
+        raise ValueError('Job ja finalizado')
+    if action == 'pause':
+        if status not in {'running', 'queued'}:
+            raise ValueError('Job nao pode ser pausado neste estado')
+        updated = update_background_job_status(job_id, 'paused')
+        _write_progress('jobs', f'Job {job_id} pausado.', status='paused')
+    elif action == 'resume':
+        if status != 'paused':
+            raise ValueError('Apenas jobs pausados podem ser retomados')
+        updated = update_background_job_status(job_id, 'running')
+        _write_progress('jobs', f'Job {job_id} retomado.', status='running')
+    elif action == 'cancel':
+        updated = update_background_job_status(job_id, 'cancelled')
+        if (job.get('entity_type') or '') == 'plan' and job.get('entity_id'):
+            plan_id = int(job['entity_id'])
+            update_ingest_plan_status(plan_id, 'cancelled')
+            import_row = get_import_by_plan(plan_id)
+            if import_row:
+                update_import_status(int(import_row['id']), 'cancelled')
+        _write_progress('jobs', f'Job {job_id} cancelado.', status='cancelled')
+    else:
+        raise ValueError('Acao de job invalida')
+    return {'ok': True, 'job': updated, 'health': health({})}
+
+
 COMMANDS = {
     'state': state,
     'set_vault': set_vault,
@@ -855,6 +926,7 @@ COMMANDS = {
     'progress': progress,
     'logs': logs,
     'diagnostics': diagnostics,
+    'job_control': job_control,
 }
 
 

@@ -1,4 +1,15 @@
-import { filterGalleryItems, hasMissingPreview, isRaw, isVideo, normalizeCameraName, type GalleryFilter, type GalleryItem } from "../src/galleryFilters.js";
+import {
+  filterGalleryItems,
+  galleryFilterKey,
+  hasMissingPreview,
+  isRaw,
+  isVideo,
+  mergeGalleryFilter,
+  normalizeCameraName,
+  normalizeGalleryFilter,
+  type GalleryFilter,
+  type GalleryItem,
+} from "../src/galleryFilters.js";
 
 function assertEqual<T>(actual: T, expected: T) {
   if (JSON.stringify(actual) !== JSON.stringify(expected)) {
@@ -75,3 +86,32 @@ assertEqual(isVideo(items[2]), true);
 assertEqual(hasMissingPreview(items[0]), true);
 assertEqual(normalizeCameraName("", "FC3582", "DJI FC3582"), "DJI FC3582");
 assertEqual(normalizeCameraName("DJI", "DJI FC3582", ""), "DJI FC3582");
+
+const mergedMonth = mergeGalleryFilter(baseFilter, { month: "2026-06" });
+assertEqual(mergedMonth.year, "2026");
+assertEqual(mergedMonth.month, "2026-06");
+
+const combined = mergeGalleryFilter(mergedMonth, { extension: ".CR2" });
+assertEqual(combined.year, "2026");
+assertEqual(combined.month, "2026-06");
+assertEqual(combined.extension, "cr2");
+
+const combinedDevice = mergeGalleryFilter(combined, { device: "DJI FC7303" });
+assertEqual(combinedDevice.month, "2026-06");
+assertEqual(combinedDevice.extension, "cr2");
+assertEqual(combinedDevice.device, "DJI FC7303");
+assertEqual(combinedDevice.camera, "all");
+
+const combinedCamera = mergeGalleryFilter(combinedDevice, { camera: "DJI FC7303" });
+assertEqual(combinedCamera.device, "DJI FC7303");
+assertEqual(combinedCamera.camera, "DJI FC7303");
+
+const changedYear = mergeGalleryFilter(combinedCamera, { year: "2024" });
+assertEqual(changedYear.year, "2024");
+assertEqual(changedYear.month, "all");
+assertEqual(changedYear.extension, "cr2");
+
+const normalized = normalizeGalleryFilter({ extension: ".JPG", media: "PHOTO", query: " drone " });
+assertEqual(normalized.extension, "jpg");
+assertEqual(normalized.media, "photo");
+assertEqual(galleryFilterKey(normalized).includes("drone"), true);

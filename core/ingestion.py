@@ -296,6 +296,7 @@ def _copy_with_staging(src: Path, dst: Path, expected_sha256: Optional[str],
 def execute_ingest_plan(
     plan_id: int,
     callback: Optional[Callable[[int, int, Path, Optional[dict]], None]] = None,
+    control: Optional[Callable[[], str]] = None,
     verify_mode: str = 'size',
 ) -> dict:
     """Execute persisted ingest operations with staging and hash verification."""
@@ -344,6 +345,23 @@ def execute_ingest_plan(
             dst = Path(op['dst_path'])
             if callback and index == 0:
                 callback(0, len(operations), src, {'event': 'start', **stats})
+            if control:
+                state = control()
+                while state == 'paused':
+                    if callback:
+                        callback(index, len(operations), src, {'event': 'paused', **stats})
+                    time.sleep(1.0)
+                    state = control()
+                if state == 'cancelled':
+                    finalize_started = time.perf_counter()
+                    update_ingest_plan_status(plan_id, 'cancelled')
+                    if import_id:
+                        update_import_status(import_id, 'cancelled')
+                    stats['finalize_seconds'] += time.perf_counter() - finalize_started
+                    stats['cancelled'] = 1
+                    if callback:
+                        callback(index, len(operations), src, {'event': 'cancelled', **stats})
+                    break
 
             if op['status'] in {'done', 'skipped'}:
                 stats['skipped'] += 1
@@ -423,17 +441,18 @@ def execute_ingest_plan(
                 if callback:
                     callback(index + 1, len(operations), src, {'event': 'error', **stats})
 
-        finalize_started = time.perf_counter()
-        update_ingest_plan_status(plan_id, 'completed' if stats['errors'] == 0 else 'error')
-        if import_id:
-            update_import_summary(import_id, {
-                'files_imported': stats['processed'],
-                'files_skipped': stats['skipped'],
-                'files_error': stats['errors'],
-                'bytes_imported': stats['bytes_imported'],
-            })
-            update_import_status(import_id, 'completed' if stats['errors'] == 0 else 'failed')
-        stats['finalize_seconds'] += time.perf_counter() - finalize_started
+        if not stats.get('cancelled'):
+            finalize_started = time.perf_counter()
+            update_ingest_plan_status(plan_id, 'completed' if stats['errors'] == 0 else 'error')
+            if import_id:
+                update_import_summary(import_id, {
+                    'files_imported': stats['processed'],
+                    'files_skipped': stats['skipped'],
+                    'files_error': stats['errors'],
+                    'bytes_imported': stats['bytes_imported'],
+                })
+                update_import_status(import_id, 'completed' if stats['errors'] == 0 else 'failed')
+            stats['finalize_seconds'] += time.perf_counter() - finalize_started
     except Exception:
         log.exception("execute_ingest_plan fatal plan_id=%s", plan_id)
         update_ingest_plan_status(plan_id, 'error')
