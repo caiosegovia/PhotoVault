@@ -41,6 +41,7 @@ export type GalleryState = {
   items: GalleryItem[];
   page?: GalleryPage;
   total: number;
+  filteredTotal?: number;
   photos: number;
   videos: number;
   withoutDate: number;
@@ -132,6 +133,19 @@ export type DiagnosticsState = {
 export type CatalogNote = { id: number; note_type: string; source: string; body: string; created_at: string };
 export type AssetCatalog = { assetId: number; tags: string[]; notes: CatalogNote[] };
 export type HealthInsight = { title: string; detail: string; action: string };
+export type BackgroundJob = {
+  id: number;
+  kind: string;
+  status: string;
+  entity_type?: string;
+  entity_id?: number;
+  payload?: Record<string, unknown>;
+  created_at?: string;
+  started_at?: string;
+  completed_at?: string;
+  updated_at?: string;
+  error?: string;
+};
 
 export type ResumableImport = {
   id: number;
@@ -155,6 +169,7 @@ export type HealthState = {
   processing?: Record<string, number>;
   resumableImports?: ResumableImport[];
   jobs?: Record<string, Record<string, number>>;
+  recentJobs?: BackgroundJob[];
   insights?: HealthInsight[];
 };
 

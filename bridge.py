@@ -9,6 +9,7 @@ from pathlib import Path
 from core.database import (
     add_catalog_note,
     backfill_catalog_metadata_from_gallery,
+    count_gallery_assets,
     gallery_breakdowns,
     gallery_month_timeline,
     gallery_health,
@@ -19,13 +20,16 @@ from core.database import (
     get_latest_vault,
     init_db,
     job_summary,
+    finish_background_job,
     list_gallery_assets,
+    list_background_jobs,
     list_imports,
     processing_summary,
     resumable_imports,
     save_asset_tags,
     save_vault,
     search_gallery_assets,
+    start_background_job,
     summarize_import_decisions,
     update_import_file_decision,
 )
@@ -283,6 +287,9 @@ def _gallery_items(assets: list[dict], ensure_thumbnails: bool = False) -> list[
 def _gallery_payload(
     limit: int = GALLERY_ITEM_LIMIT,
     offset: int = 0,
+    filters: dict | None = None,
+    query: str = "",
+    sort: str = "",
     ensure_thumbnails: bool = False,
     include_items: bool = True,
 ) -> dict:
@@ -294,7 +301,8 @@ def _gallery_payload(
     breakdowns = gallery_breakdowns()
     breakdowns_at = time.perf_counter()
     duplicate_savings = duplicate_savings_total()
-    assets = list_gallery_assets(limit, offset=offset) if include_items else []
+    filtered_total = count_gallery_assets(filters=filters, query=query) if include_items else gallery_total['total']
+    assets = list_gallery_assets(limit, offset=offset, filters=filters, query=query, sort=sort) if include_items else []
     assets_at = time.perf_counter()
     items = _gallery_items(assets, ensure_thumbnails=ensure_thumbnails) if include_items else []
     items_at = time.perf_counter()
@@ -304,8 +312,9 @@ def _gallery_payload(
             'limit': limit,
             'offset': offset,
             'count': len(items),
-            'hasMore': bool(include_items and offset + len(items) < gallery_total['total']),
+            'hasMore': bool(include_items and offset + len(items) < filtered_total),
         },
+        'filteredTotal': filtered_total,
         'total': gallery_total['total'],
         'photos': gallery_total['photos'],
         'videos': gallery_total['videos'],
@@ -465,6 +474,7 @@ def analyze_import(payload: dict) -> dict:
         raise ValueError('Configure o vault antes de importar')
     validate_import_paths(Path(source), Path(vault_path))
     log.info("bridge analyze_import start source=%s vault=%s", source, vault_path)
+    job_id = start_background_job('analysis', 'path', None, {'sourcePath': source, 'vaultPath': vault_path})
     _write_progress('analysis', f'Iniciando analise de {source}', path=source)
 
     def on_progress(path: Path, done: int) -> None:
@@ -476,14 +486,18 @@ def analyze_import(payload: dict) -> dict:
                 path=str(path),
             )
 
-    analysis = create_import_analysis(
-        source_path=Path(source),
-        vault_root=Path(vault_path),
-        pattern=payload.get('pattern') or '{year}/{month:02d}',
-        mode=payload.get('mode') or 'copy',
-        name=payload.get('name') or Path(source).name,
-        callback=on_progress,
-    )
+    try:
+        analysis = create_import_analysis(
+            source_path=Path(source),
+            vault_root=Path(vault_path),
+            pattern=payload.get('pattern') or '{year}/{month:02d}',
+            mode=payload.get('mode') or 'copy',
+            name=payload.get('name') or Path(source).name,
+            callback=on_progress,
+        )
+    except Exception as exc:
+        finish_background_job(job_id, 'error', error=str(exc))
+        raise
     _write_progress(
         'analysis',
         f'Analise concluida: {analysis.files_found} encontrados, {analysis.files_new} novos, {analysis.files_duplicate} duplicados.',
@@ -500,6 +514,13 @@ def analyze_import(payload: dict) -> dict:
         analysis.files_duplicate,
         analysis.errors,
     )
+    finish_background_job(job_id, 'done', {
+        'importId': analysis.import_id,
+        'found': analysis.files_found,
+        'new': analysis.files_new,
+        'duplicates': analysis.files_duplicate,
+        'errors': analysis.errors,
+    })
     return {'ok': True, 'importId': analysis.import_id, **state({})}
 
 
@@ -514,8 +535,20 @@ def gallery(payload: dict) -> dict:
     init_db()
     limit = max(1, min(int(payload.get('limit') or GALLERY_ITEM_LIMIT), MAX_GALLERY_PAGE_LIMIT))
     offset = max(0, int(payload.get('offset') or 0))
+    filters = payload.get('filter') or {}
+    query = payload.get('query') or filters.get('query') or ''
+    sort = payload.get('sort') or 'date_desc'
     ensure = bool(payload.get('ensureThumbnails'))
-    return _gallery_payload(limit, offset=offset, ensure_thumbnails=ensure)
+    job_id = start_background_job('previews', 'gallery', None, {'limit': limit, 'offset': offset}) if ensure else None
+    try:
+        result = _gallery_payload(limit, offset=offset, filters=filters, query=query, sort=sort, ensure_thumbnails=ensure)
+    except Exception as exc:
+        if job_id:
+            finish_background_job(job_id, 'error', error=str(exc))
+        raise
+    if job_id:
+        finish_background_job(job_id, 'done', {'count': result['page']['count'], 'hasMore': result['page']['hasMore']})
+    return result
 
 
 def search_gallery(payload: dict) -> dict:
@@ -523,15 +556,19 @@ def search_gallery(payload: dict) -> dict:
     query = payload.get('query') or ''
     limit = max(1, min(int(payload.get('limit') or 240), MAX_GALLERY_PAGE_LIMIT))
     offset = max(0, int(payload.get('offset') or 0))
+    filters = payload.get('filter') or {}
+    sort = payload.get('sort') or 'date_desc'
     ensure = bool(payload.get('ensureThumbnails'))
     base = _gallery_payload(0, include_items=False)
-    assets = search_gallery_assets(query, limit=limit, offset=offset)
+    filtered_total = count_gallery_assets(filters=filters, query=query)
+    assets = search_gallery_assets(query, limit=limit, offset=offset, filters=filters, sort=sort)
     base['items'] = _gallery_items(assets, ensure_thumbnails=ensure)
+    base['filteredTotal'] = filtered_total
     base['page'] = {
         'limit': limit,
         'offset': offset,
         'count': len(base['items']),
-        'hasMore': bool(len(base['items']) == limit),
+        'hasMore': bool(offset + len(base['items']) < filtered_total),
     }
     base['search'] = {'query': query, 'count': len(base['items']), 'limit': limit, 'offset': offset}
     return base
@@ -542,6 +579,7 @@ def health(_payload: dict) -> dict:
     data = gallery_health()
     data['resumableImports'] = resumable_imports()
     data['jobs'] = job_summary()
+    data['recentJobs'] = list_background_jobs()
     data['insights'] = deterministic_insights(data)
     return data
 
@@ -579,6 +617,7 @@ def enrich_metadata(payload: dict) -> dict:
     init_db()
     limit = int(payload.get('limit') or 1000)
     log.info("bridge enrich_metadata start limit=%s", limit)
+    job_id = start_background_job('metadata', 'gallery', None, {'limit': limit})
     _write_progress('metadata', 'Enriquecendo metadados da galeria...', total=limit)
 
     def on_progress(current: int, total: int, path: Path) -> None:
@@ -591,7 +630,11 @@ def enrich_metadata(payload: dict) -> dict:
                 path=str(path),
             )
 
-    result = enrich_gallery_metadata(limit=limit, callback=on_progress)
+    try:
+        result = enrich_gallery_metadata(limit=limit, callback=on_progress)
+    except Exception as exc:
+        finish_background_job(job_id, 'error', error=str(exc))
+        raise
     status = 'warning' if result.unavailable else 'done'
     message = (
         'ExifTool nao encontrado. Instale o ExifTool e tente novamente.'
@@ -607,6 +650,7 @@ def enrich_metadata(payload: dict) -> dict:
         metrics=result.as_dict(),
     )
     log.info("bridge enrich_metadata done result=%s", result.as_dict())
+    finish_background_job(job_id, 'warning' if result.unavailable else 'done', result.as_dict())
     return {'ok': not result.unavailable, 'result': result.as_dict(), **state({})}
 
 
@@ -668,6 +712,7 @@ def execute_import(payload: dict) -> dict:
     if not plan_id:
         raise ValueError('planId obrigatório')
     log.info("bridge execute_import start plan_id=%s", plan_id)
+    job_id = start_background_job('import', 'plan', int(plan_id), {'verifyMode': payload.get('verifyMode') or 'size'})
     _write_progress('execution', f'Executando plano {plan_id}...', path=str(plan_id))
 
     execution_started = time.perf_counter()
@@ -726,8 +771,10 @@ def execute_import(payload: dict) -> dict:
                 'filesErrored': 1,
             },
         )
+        finish_background_job(job_id, 'error', error=str(exc))
         raise
     final_status = 'done' if result.get('errors', 0) == 0 else 'error'
+    finish_background_job(job_id, final_status, result, '' if final_status == 'done' else f"{result.get('errors', 0)} erro(s)")
     _write_progress(
         'execution',
         f'Execucao concluida: {result.get("processed", 0)} copiados, {result.get("skipped", 0)} ignorados, {result.get("errors", 0)} erros em {result.get("total_seconds", 0):.1f}s ({result.get("throughput_mbps", 0):.1f} MB/s).',

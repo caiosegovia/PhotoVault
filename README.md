@@ -17,11 +17,11 @@ O fluxo funcional cobre:
 - registrar operacoes, instancias fisicas, imports e eventos de auditoria em SQLite;
 - gerar thumbnails versionados de fotos, RAW suportados e frames de video para o painel de detalhe;
 - enriquecer metadados com ExifTool opcional instalado no sistema;
-- navegar pela galeria em modo Explorer textual, com filtros por texto, tipo, ano, mes, extensao, tamanho, dispositivo, camera, lente e problemas;
+- navegar pela galeria em modo Explorer textual, com filtros por texto, tipo, ano, mes, extensao, tamanho, dispositivo, camera, lente e problemas aplicados pela bridge/SQLite;
 - buscar no catalogo usando FTS5 do SQLite quando ha texto de busca;
-- renderizar a lista Explorer da galeria em lotes incrementais para manter a UI responsiva;
+- renderizar a lista Explorer da galeria em paginas incrementais, com ordenacao por data, tamanho ou nome;
 - registrar tags e notas de curadoria por asset;
-- acompanhar saude da galeria em uma secao propria no Cockpit, com score operacional, imports retomaveis e insights deterministicas;
+- acompanhar saude da galeria em uma secao propria no Cockpit, com score operacional, jobs persistentes, imports retomaveis e insights deterministicas;
 - abrir ou localizar arquivos no Explorer;
 - visualizar Cockpit com composicao da galeria, storage disponivel, economia por duplicatas, importacoes recentes, timeline real, facetas e sinais operacionais;
 - diagnosticar ambiente local: Python, Node/npm, Cargo, ffmpeg, ffprobe, ExifTool e paths do app;
@@ -278,7 +278,7 @@ A suite atual cobre:
 - O enriquecimento retroativo com ExifTool e opcional e nao bloqueante.
 - Binarios embutidos do ExifTool foram removidos do pacote Tauri.
 - O Cockpit passou a mostrar diagnostico de ambiente via bridge.
-- A galeria passou a usar busca FTS5 para texto, visualizacao Explorer incremental, tags/notas e painel de saude.
+- A galeria passou a usar busca FTS5 para texto, filtros/paginacao/ordenacao via bridge, visualizacao Explorer incremental, tags/notas e painel de saude.
 - A grade visual de cards foi substituida por lista Explorer textual; previews ficam no painel lateral sob selecao.
 - O cache de thumbnails passou a ser versionado para evitar reaproveitar previews antigos com regra visual defasada.
 - O Cockpit foi remodelado com secao de saude, quadrante "Na Galeria", timeline real, organizacao do acervo e economia acumulada por duplicatas evitadas.

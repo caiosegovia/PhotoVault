@@ -39,7 +39,9 @@ def test_gallery_payload_lists_assets_once_after_backfill(monkeypatch):
     monkeypatch.setattr(bridge, 'environment_diagnostics', lambda: {'status': 'ok'})
     monkeypatch.setattr(bridge, 'gallery_health', lambda: {'total': 0})
 
-    def list_assets(limit, offset=0):
+    monkeypatch.setattr(bridge, 'count_gallery_assets', lambda filters=None, query='': 6)
+
+    def list_assets(limit, offset=0, filters=None, query='', sort=''):
         calls.append(f'assets:{limit}:{offset}')
         return [{
             'instance_id': 7,
@@ -60,6 +62,7 @@ def test_gallery_payload_lists_assets_once_after_backfill(monkeypatch):
     assert calls == ['backfill', 'assets:10:5']
     assert result['timings']['backfillCount'] == 2
     assert result['page'] == {'limit': 10, 'offset': 5, 'count': 1, 'hasMore': False}
+    assert result['filteredTotal'] == 6
     assert result['items'][0]['name'] == 'IMG_0001.jpg'
     assert result['items'][0]['deviceName'] == 'Canon R6'
 
@@ -98,7 +101,7 @@ def test_state_returns_gallery_summary_without_loading_items(monkeypatch):
     })
     monkeypatch.setattr(bridge, 'duplicate_savings_total', lambda: {'count': 2, 'bytes': 100})
     monkeypatch.setattr(bridge, 'gallery_month_timeline', lambda: [])
-    monkeypatch.setattr(bridge, 'list_gallery_assets', lambda _limit, offset=0: (_ for _ in ()).throw(AssertionError('assets should not load')))
+    monkeypatch.setattr(bridge, 'list_gallery_assets', lambda _limit, offset=0, filters=None, query='', sort='': (_ for _ in ()).throw(AssertionError('assets should not load')))
     monkeypatch.setattr(bridge, 'has_ffmpeg', lambda: False)
     monkeypatch.setattr(bridge, 'has_exiftool', lambda: False)
     monkeypatch.setattr(bridge, 'exiftool_version', lambda: '')
@@ -151,7 +154,8 @@ def test_gallery_payload_can_hydrate_thumbnails_in_same_pass(tmp_path, monkeypat
     })
     monkeypatch.setattr(bridge, 'duplicate_savings_total', lambda: {'count': 0, 'bytes': 0})
     monkeypatch.setattr(bridge, 'gallery_month_timeline', lambda: [])
-    monkeypatch.setattr(bridge, 'list_gallery_assets', lambda _limit, offset=0: [{
+    monkeypatch.setattr(bridge, 'count_gallery_assets', lambda filters=None, query='': 1)
+    monkeypatch.setattr(bridge, 'list_gallery_assets', lambda _limit, offset=0, filters=None, query='', sort='': [{
         'instance_id': 8,
         'asset_id': 12,
         'path': str(photo),
@@ -166,6 +170,8 @@ def test_gallery_payload_can_hydrate_thumbnails_in_same_pass(tmp_path, monkeypat
     monkeypatch.setattr(bridge, 'exiftool_version', lambda: '')
     monkeypatch.setattr(bridge, 'exiftool_status', lambda: {'available': False})
     monkeypatch.setattr(bridge, 'processing_summary', lambda _processor: {'total': 0})
+    monkeypatch.setattr(bridge, 'start_background_job', lambda *args, **kwargs: 99)
+    monkeypatch.setattr(bridge, 'finish_background_job', lambda *args, **kwargs: None)
 
     result = bridge.gallery({'limit': 10, 'ensureThumbnails': True})
 
@@ -183,7 +189,8 @@ def test_search_gallery_uses_search_assets(monkeypatch):
         'total': 2,
         'breakdowns': {'media': [], 'years': [], 'months': [], 'extensions': []},
     })
-    monkeypatch.setattr(bridge, 'search_gallery_assets', lambda query, limit, offset=0: [{
+    monkeypatch.setattr(bridge, 'count_gallery_assets', lambda filters=None, query='': 12)
+    monkeypatch.setattr(bridge, 'search_gallery_assets', lambda query, limit, offset=0, filters=None, sort='': [{
         'instance_id': 9,
         'asset_id': 13,
         'path': 'D:/Vault/drone-shot.mp4',
@@ -202,5 +209,6 @@ def test_search_gallery_uses_search_assets(monkeypatch):
     assert result['search']['count'] == 1
     assert result['search']['offset'] == 10
     assert result['page']['offset'] == 10
+    assert result['page']['hasMore'] is True
     assert result['items'][0]['tags'] == 'drone'
     assert result['items'][0]['latestNote'] == 'Bom take'

@@ -612,7 +612,14 @@ h1 {
   gap: 8px;
 }
 
-.health-insight-strip article {
+.health-job-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.health-insight-strip article,
+.health-job-strip article {
   min-width: 0;
   border: 1px solid var(--line);
   border-radius: 6px;
@@ -620,8 +627,25 @@ h1 {
   background: rgba(255, 255, 255, 0.025);
 }
 
+.health-job-strip article.done {
+  border-color: rgba(105, 217, 135, 0.26);
+}
+
+.health-job-strip article.running,
+.health-job-strip article.warning {
+  border-color: rgba(238, 196, 94, 0.3);
+}
+
+.health-job-strip article.error,
+.health-job-strip article.failed {
+  border-color: rgba(242, 119, 119, 0.34);
+}
+
 .health-insight-strip strong,
-.health-insight-strip span {
+.health-insight-strip span,
+.health-job-strip span,
+.health-job-strip strong,
+.health-job-strip em {
   display: block;
   overflow: hidden;
   font-size: 12px;
@@ -629,9 +653,18 @@ h1 {
   white-space: nowrap;
 }
 
-.health-insight-strip span {
+.health-insight-strip span,
+.health-job-strip em {
   margin-top: 3px;
   color: var(--soft);
+  font-style: normal;
+}
+
+.health-job-strip span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
 }
 
 .gallery-summary-panel {
@@ -2076,6 +2109,35 @@ h1 {
 
 .view-mode-pill svg {
   color: var(--accent);
+}
+
+.sort-segment {
+  display: inline-flex;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #101212;
+}
+
+.sort-segment button {
+  min-height: 34px;
+  border: 0;
+  border-right: 1px solid var(--line);
+  padding: 0 9px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.sort-segment button:last-child {
+  border-right: 0;
+}
+
+.sort-segment button.active,
+.sort-segment button:hover {
+  background: var(--panel-3);
+  color: var(--text);
 }
 
 .media-explorer {

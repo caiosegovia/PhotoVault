@@ -43,21 +43,22 @@ Implementado:
 
 ### 4. Paginacao ou virtualizacao da galeria
 
-Status: curto prazo implementado no frontend com renderizacao incremental da lista Explorer. O contrato da bridge ja aceita `limit`/`offset`; ainda falta mover filtros/sort para SQLite e usar paginacao real na UI.
+Status: implementado com renderizacao incremental da lista Explorer, `limit`/`offset`, filtros principais e ordenacao aplicados na bridge/SQLite.
 
-Problema: `GALLERY_ITEM_LIMIT` chega a 50000 itens e a UI filtra localmente.
+Problema original: `GALLERY_ITEM_LIMIT` chegava a 50000 itens e a UI filtrava localmente.
 
 Implementado:
 
 - renderizacao inicial limitada a 240 linhas;
-- botao para carregar mais resultados filtrados sem redesenhar todos os itens de uma vez.
-- payload `gallery`/`search_gallery` retorna bloco `page` com `limit`, `offset`, `count` e `hasMore`.
+- botao para carregar mais resultados filtrados sem redesenhar todos os itens de uma vez;
+- payload `gallery`/`search_gallery` retorna bloco `page` com `limit`, `offset`, `count`, `hasMore` e `filteredTotal`;
+- filtros por texto, tipo, ano, mes, extensao, dispositivo, camera, lente, tamanho e problema sao aplicados antes da pagina;
+- ordenacao por data, tamanho e nome e enviada pela UI.
 
 Proximos passos:
 
-- medio prazo: mover filtros e ordenacao para SQLite;
-- contrato alvo: `gallery({ limit, offset, filter, sort })`;
-- manter facetas agregadas independentes da pagina.
+- refinar facetas contextuais por filtro quando a galeria crescer muito;
+- avaliar virtualizacao visual caso uma pagina de 240 ainda pese em maquinas antigas.
 
 Impacto:
 
@@ -101,13 +102,14 @@ Impacto:
 
 ### 7. Jobs longos persistentes
 
-Status: base de schema `background_jobs` e resumo `job_summary` implementados. Workers retomaveis completos ainda pendentes.
+Status: primeira fase implementada. `background_jobs` registra lifecycle persistente de analise, importacao, previews e metadados; `health` exibe resumo e jobs recentes. Workers retomaveis completos ainda pendentes.
 
 Problema: analise, ingestao, previews e ExifTool sao operacoes longas disparadas por chamadas bridge.
 
 Proposta:
 
 - modelar jobs no SQLite;
+- registrar inicio/fim/erro dos fluxos longos chamados pela bridge;
 - rodar processamento em passos retomaveis;
 - preservar progresso por job;
 - permitir retry/cancelamento controlado.

@@ -33,7 +33,6 @@ import {
   Video,
 } from "lucide-react";
 import {
-  filterGalleryItems,
   hasMissingPreview,
   isRaw,
   isVideo,
@@ -151,8 +150,8 @@ const PATTERN_PRESETS = [
   { label: "Mes compacto", value: "{year}-{month:02d}" },
 ];
 const CAPACITY_RESERVE_BYTES = 1024 ** 3;
-const GALLERY_ITEM_LIMIT = 50000;
 const GALLERY_PAGE_SIZE = 240;
+type GallerySort = "date_desc" | "date_asc" | "size_desc" | "name_asc";
 
 function formatNumber(value: number) {
   return value.toLocaleString("pt-BR");
@@ -334,6 +333,7 @@ function App() {
   const [catalog, setCatalog] = React.useState<AssetCatalog | null>(null);
   const [catalogBusy, setCatalogBusy] = React.useState(false);
   const [filter, setFilter] = React.useState<GalleryFilter>(readStoredFilter);
+  const [gallerySort, setGallerySort] = React.useState<GallerySort>("date_desc");
   const progressTimerRef = React.useRef<number | null>(null);
   const galleryLoadingRef = React.useRef(false);
 
@@ -372,17 +372,27 @@ function App() {
 
   React.useEffect(() => {
     if (activeView !== "gallery") return;
-    const query = filter.query.trim();
-    const timer = window.setTimeout(() => {
-      if (query.length >= 2) searchGallery(query);
-      if (!query && gallery.search?.query) refreshGallery(false);
-    }, 260);
+    const timer = window.setTimeout(() => refreshGallery(false), 260);
     return () => window.clearTimeout(timer);
-  }, [activeView, filter.query]);
+  }, [
+    activeView,
+    filter.media,
+    filter.year,
+    filter.month,
+    filter.extension,
+    filter.deviceType,
+    filter.device,
+    filter.camera,
+    filter.lens,
+    filter.size,
+    filter.problem,
+    filter.query,
+    gallerySort,
+  ]);
 
   const filteredItems = React.useMemo(() => {
-    return filterGalleryItems(gallery.items, filter);
-  }, [gallery.items, filter]);
+    return gallery.items;
+  }, [gallery.items]);
   const selectedGalleryItem = filteredItems.find((item) => item.id === selectedGalleryId) ?? filteredItems[0] ?? null;
 
   React.useEffect(() => {
@@ -445,7 +455,14 @@ function App() {
     setGalleryBusy(true);
     setThumbsBusy(ensureThumbnails);
     try {
-      const result = await callBridge<GalleryState>("gallery", { limit: GALLERY_ITEM_LIMIT, ensureThumbnails });
+      const result = await callBridge<GalleryState>("gallery", {
+        limit: GALLERY_PAGE_SIZE,
+        offset: 0,
+        filter,
+        query: filter.query.trim(),
+        sort: gallerySort,
+        ensureThumbnails,
+      });
       setGallery(result);
       setSelectedGalleryId((current) => current ?? result.items[0]?.id ?? null);
       setMessage(ensureThumbnails ? "Previews atualizados." : "Galeria atualizada.");
@@ -458,17 +475,27 @@ function App() {
     }
   }
 
-  async function searchGallery(query: string) {
+  async function loadMoreGallery() {
     if (galleryLoadingRef.current) return;
+    if (!gallery.page?.hasMore) return;
     galleryLoadingRef.current = true;
     setGalleryBusy(true);
     try {
-      const result = await callBridge<GalleryState>("search_gallery", { query, limit: GALLERY_ITEM_LIMIT });
-      setGallery(result);
+      const result = await callBridge<GalleryState>("gallery", {
+        limit: GALLERY_PAGE_SIZE,
+        offset: gallery.items.length,
+        filter,
+        query: filter.query.trim(),
+        sort: gallerySort,
+      });
+      setGallery((current) => ({
+        ...result,
+        items: [...current.items, ...result.items],
+      }));
       setSelectedGalleryId((current) => result.items.some((item) => item.id === current) ? current : result.items[0]?.id ?? null);
-      setMessage(`Busca no catalogo: ${formatNumber(result.items.length)} resultado(s).`);
+      setMessage(`Galeria carregou mais ${formatNumber(result.items.length)} item(ns).`);
     } catch (error) {
-      setMessage(`Erro ao buscar no catalogo: ${String(error)}`);
+      setMessage(`Erro ao carregar mais itens: ${String(error)}`);
     } finally {
       setGalleryBusy(false);
       galleryLoadingRef.current = false;
@@ -889,6 +916,7 @@ function App() {
             vault={vault}
             imports={imports}
             filter={filter}
+            sort={gallerySort}
             items={filteredItems}
             selectedItem={selectedGalleryItem}
             catalog={catalog}
@@ -897,9 +925,11 @@ function App() {
             thumbsBusy={thumbsBusy}
             enrichBusy={enrichBusy}
             onFilter={patchFilter}
+            onSort={setGallerySort}
             onClear={() => setFilter(DEFAULT_FILTER)}
             onSelect={setSelectedGalleryId}
             onRefresh={() => refreshGallery(false)}
+            onLoadMore={loadMoreGallery}
             onHydrate={() => refreshGallery(true)}
             onEnrich={enrichMetadata}
             onOpenPath={openPath}
@@ -1230,6 +1260,17 @@ function GalleryHealthSection({
           ))}
         </div>
       ) : null}
+      {(health.recentJobs ?? []).length ? (
+        <div className="health-job-strip">
+          {(health.recentJobs ?? []).slice(0, 4).map((job) => (
+            <article key={job.id} className={job.status}>
+              <span>{job.kind}</span>
+              <strong>{job.status}</strong>
+              <em>{job.error || job.completed_at || job.updated_at || job.started_at || job.created_at || "sem data"}</em>
+            </article>
+          ))}
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -1379,6 +1420,7 @@ function GalleryView({
   vault,
   imports,
   filter,
+  sort,
   items,
   selectedItem,
   catalog,
@@ -1387,9 +1429,11 @@ function GalleryView({
   thumbsBusy,
   enrichBusy,
   onFilter,
+  onSort,
   onClear,
   onSelect,
   onRefresh,
+  onLoadMore,
   onHydrate,
   onEnrich,
   onOpenPath,
@@ -1401,6 +1445,7 @@ function GalleryView({
   vault: Vault;
   imports: ImportItem[];
   filter: GalleryFilter;
+  sort: GallerySort;
   items: GalleryItem[];
   selectedItem: GalleryItem | null;
   catalog: AssetCatalog | null;
@@ -1409,9 +1454,11 @@ function GalleryView({
   thumbsBusy: boolean;
   enrichBusy: boolean;
   onFilter: (filter: Partial<GalleryFilter>) => void;
+  onSort: (sort: GallerySort) => void;
   onClear: () => void;
   onSelect: (id: number) => void;
   onRefresh: () => void;
+  onLoadMore: () => void;
   onHydrate: () => void;
   onEnrich: () => void;
   onOpenPath: (path?: string) => void;
@@ -1419,44 +1466,20 @@ function GalleryView({
   onSaveTags: (assetId: number, tags: string[]) => void;
   onSaveNote: (assetId: number, body: string) => void;
 }) {
-  const [visibleLimit, setVisibleLimit] = React.useState(GALLERY_PAGE_SIZE);
   const [openFilter, setOpenFilter] = React.useState<string | null>(null);
-  React.useEffect(() => {
-    setVisibleLimit(GALLERY_PAGE_SIZE);
-  }, [
-    filter.media,
-    filter.year,
-    filter.month,
-    filter.extension,
-    filter.deviceType,
-    filter.device,
-    filter.camera,
-    filter.lens,
-    filter.size,
-    filter.problem,
-    filter.query,
-    gallery.items.length,
-  ]);
   const totalBytes = items.reduce((sum, item) => sum + Number(item.sizeBytes || 0), 0);
-  const visibleItems = items.slice(0, visibleLimit);
-  const hasMoreItems = visibleItems.length < items.length;
-  const facetBase: GalleryFilter = { ...filter, month: "all", problem: "all", deviceType: "all", camera: "all", lens: "all" };
-  const typeContext = filterGalleryItems(gallery.items, { ...facetBase, media: "all" });
-  const yearContext = filterGalleryItems(gallery.items, { ...facetBase, year: "all" });
-  const extensionContext = filterGalleryItems(gallery.items, { ...facetBase, extension: "all" });
-  const deviceContext = filterGalleryItems(gallery.items, { ...facetBase, device: "all" });
-  const cameraContext = filterGalleryItems(gallery.items, { ...facetBase, camera: "all" });
-  const lensContext = filterGalleryItems(gallery.items, { ...facetBase, lens: "all" });
-  const sizeContext = filterGalleryItems(gallery.items, { ...facetBase, size: "all" });
-  const typeOptions = bucketsBy(typeContext, (item) => normalizeMediaLabel(item.mediaType), 4);
-  const yearOptions = bucketsBy(yearContext, itemYear, 8);
-  const extensionOptions = bucketsBy(extensionContext, (item) => `.${normalizeExtension(item.extension)}`, 10);
-  const deviceOptions = bucketsBy(deviceContext, (item) => item.deviceName || "Desconhecido", 10);
-  const cameraOptions = bucketsBy(cameraContext, (item) => normalizeCameraName(item.cameraMake, item.cameraModel, item.deviceName), 10);
-  const lensOptions = bucketsBy(lensContext, (item) => item.lensModel || "Desconhecido", 10);
+  const visibleItems = items;
+  const filteredTotal = gallery.filteredTotal ?? items.length;
+  const hasMoreItems = Boolean(gallery.page?.hasMore);
+  const typeOptions = gallery.breakdowns.media;
+  const yearOptions = gallery.breakdowns.years;
+  const extensionOptions = gallery.breakdowns.extensions.map((item) => ({ ...item, label: `.${normalizeExtension(item.label)}` }));
+  const deviceOptions = gallery.breakdowns.devices ?? [];
+  const cameraOptions = gallery.breakdowns.cameras ?? [];
+  const lensOptions = bucketsBy(gallery.items, (item) => item.lensModel || "Desconhecido", 10);
   const sizeOptions = [
-    bucket("large", sizeContext.filter((item) => sizeBucketLabel(item) === "large")),
-    bucket("small", sizeContext.filter((item) => sizeBucketLabel(item) === "small")),
+    bucket("large", gallery.items.filter((item) => sizeBucketLabel(item) === "large")),
+    bucket("small", gallery.items.filter((item) => sizeBucketLabel(item) === "small")),
   ];
   const activeFilterCount = [
     filter.media,
@@ -1490,18 +1513,18 @@ function GalleryView({
             <input value={filter.query} onChange={(event) => onFilter({ query: event.target.value })} placeholder="Buscar nome, pasta, câmera, lente..." />
           </label>
           <div className="header-filter-row">
-            <HeaderFilterMenu id="media" openId={openFilter} onOpen={setOpenFilter} title="Tipo" active={filter.media} totalLabel="Todos" total={typeContext.length} options={typeOptions} labelFor={mediaLabel} onPick={(value) => onFilter({ media: value })} />
-            <HeaderFilterMenu id="year" openId={openFilter} onOpen={setOpenFilter} title="Ano" active={filter.year} totalLabel="Todos" total={yearContext.length} options={yearOptions} onPick={(value) => onFilter({ year: value })} />
-            <HeaderFilterMenu id="extension" openId={openFilter} onOpen={setOpenFilter} title="Extensao" active={normalizeExtension(filter.extension) === "all" ? "all" : `.${normalizeExtension(filter.extension)}`} totalLabel="Todas" total={extensionContext.length} options={extensionOptions} onPick={(value) => onFilter({ extension: normalizeExtension(value) })} />
-            <HeaderFilterMenu id="device" openId={openFilter} onOpen={setOpenFilter} title="Dispositivo" active={filter.device} totalLabel="Todos" total={deviceContext.length} options={deviceOptions} onPick={(value) => onFilter({ device: value })} />
-            <HeaderFilterMenu id="camera" openId={openFilter} onOpen={setOpenFilter} title="Camera" active={filter.camera} totalLabel="Todas" total={cameraContext.length} options={cameraOptions} onPick={(value) => onFilter({ camera: value })} />
-            <HeaderFilterMenu id="lens" openId={openFilter} onOpen={setOpenFilter} title="Lente" active={filter.lens} totalLabel="Todas" total={lensContext.length} options={lensOptions} onPick={(value) => onFilter({ lens: value })} />
-            <HeaderFilterMenu id="size" openId={openFilter} onOpen={setOpenFilter} title="Tamanho" active={filter.size} totalLabel="Todos" total={sizeContext.length} options={sizeOptions} labelFor={sizeLabel} onPick={(value) => onFilter({ size: value as GalleryFilter["size"] })} />
+            <HeaderFilterMenu id="media" openId={openFilter} onOpen={setOpenFilter} title="Tipo" active={filter.media} totalLabel="Todos" total={gallery.total} options={typeOptions} labelFor={mediaLabel} onPick={(value) => onFilter({ media: normalizeMediaLabel(value) })} />
+            <HeaderFilterMenu id="year" openId={openFilter} onOpen={setOpenFilter} title="Ano" active={filter.year} totalLabel="Todos" total={gallery.total} options={yearOptions} onPick={(value) => onFilter({ year: value })} />
+            <HeaderFilterMenu id="extension" openId={openFilter} onOpen={setOpenFilter} title="Extensao" active={normalizeExtension(filter.extension) === "all" ? "all" : `.${normalizeExtension(filter.extension)}`} totalLabel="Todas" total={gallery.total} options={extensionOptions} onPick={(value) => onFilter({ extension: normalizeExtension(value) })} />
+            <HeaderFilterMenu id="device" openId={openFilter} onOpen={setOpenFilter} title="Dispositivo" active={filter.device} totalLabel="Todos" total={gallery.total} options={deviceOptions} onPick={(value) => onFilter({ device: value })} />
+            <HeaderFilterMenu id="camera" openId={openFilter} onOpen={setOpenFilter} title="Camera" active={filter.camera} totalLabel="Todas" total={gallery.total} options={cameraOptions} onPick={(value) => onFilter({ camera: value })} />
+            <HeaderFilterMenu id="lens" openId={openFilter} onOpen={setOpenFilter} title="Lente" active={filter.lens} totalLabel="Todas" total={gallery.total} options={lensOptions} onPick={(value) => onFilter({ lens: value })} />
+            <HeaderFilterMenu id="size" openId={openFilter} onOpen={setOpenFilter} title="Tamanho" active={filter.size} totalLabel="Todos" total={filteredTotal} options={sizeOptions} labelFor={sizeLabel} onPick={(value) => onFilter({ size: value as GalleryFilter["size"] })} />
             <button className="ghost clear-header-filters" onClick={onClear} disabled={!activeFilterCount}><Filter size={15} /> Limpar {activeFilterCount ? `(${activeFilterCount})` : ""}</button>
           </div>
         </div>
         <div className="gallery-composition">
-          <BigNumber label="Arquivos" value={formatNumber(gallery.total)} detail={`${formatNumber(visibleItems.length)} renderizados agora`} />
+          <BigNumber label="Arquivos" value={formatNumber(filteredTotal)} detail={`${formatNumber(visibleItems.length)} renderizados agora`} />
           <BigNumber label="Tamanho" value={gallery.bytes} detail={`${formatBytes(totalBytes)} nesta visao`} />
           <BigNumber label="Periodo" value={dateRangeLabel(gallery)} detail={`${formatNumber(gallery.yearCount)} anos | ${formatNumber(gallery.monthCount)} meses`} />
           <BigNumber label="Formatos" value={formatNumber(gallery.extensionCount)} detail={`${formatNumber(gallery.breakdowns.devices?.length ?? 0)} origens tecnicas`} />
@@ -1526,11 +1549,17 @@ function GalleryView({
         ) : null}
         <div className="gallery-toolbar">
           <div>
-            <strong>{formatNumber(visibleItems.length)} de {formatNumber(items.length)} itens</strong>
+            <strong>{formatNumber(visibleItems.length)} de {formatNumber(filteredTotal)} itens</strong>
             <span>{formatBytes(totalBytes)} no filtro atual</span>
           </div>
           <div>
             <button className="ghost" onClick={onRefresh} disabled={galleryBusy}>Atualizar</button>
+            <div className="sort-segment" aria-label="Ordenacao da galeria">
+              <button className={sort === "date_desc" ? "active" : ""} onClick={() => onSort("date_desc")}>Recentes</button>
+              <button className={sort === "date_asc" ? "active" : ""} onClick={() => onSort("date_asc")}>Antigas</button>
+              <button className={sort === "size_desc" ? "active" : ""} onClick={() => onSort("size_desc")}>Tamanho</button>
+              <button className={sort === "name_asc" ? "active" : ""} onClick={() => onSort("name_asc")}>Nome</button>
+            </div>
             <span className="view-mode-pill"><ListChecks size={14} /> Explorer</span>
             <button className="primary" onClick={onHydrate} disabled={galleryBusy || thumbsBusy}><Images size={16} /> {thumbsBusy ? "Gerando..." : "Previews"}</button>
             <button className="primary" onClick={onEnrich} disabled={enrichBusy || !gallery.total}><Sparkles size={16} /> {enrichBusy ? "Lendo..." : "Metadados"}</button>
@@ -1555,8 +1584,8 @@ function GalleryView({
         </div>
         {hasMoreItems ? (
           <div className="load-more-row">
-            <button className="secondary" onClick={() => setVisibleLimit((current) => current + GALLERY_PAGE_SIZE)}>
-              <Layers3 size={15} /> Carregar mais {formatNumber(Math.min(GALLERY_PAGE_SIZE, items.length - visibleItems.length))}
+            <button className="secondary" onClick={onLoadMore} disabled={galleryBusy}>
+              <Layers3 size={15} /> Carregar mais {formatNumber(Math.min(GALLERY_PAGE_SIZE, Math.max(filteredTotal - visibleItems.length, 0)))}
             </button>
           </div>
         ) : null}
