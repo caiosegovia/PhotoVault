@@ -1862,217 +1862,100 @@ def gallery_month_timeline(limit: int = 120) -> list[dict]:
     return [dict(row) for row in rows]
 
 
-def gallery_breakdowns(limit: int = 8) -> dict:
-    """Return grouped gallery facets for cockpit-style summaries."""
+def _facet_filter(filters: Optional[dict], exclude: set[str]) -> dict:
+    data = dict(filters or {})
+    for key in exclude:
+        data.pop(key, None)
+    return data
+
+
+def _facet_rows(conn: sqlite3.Connection, label_sql: str, filters: Optional[dict], exclude: set[str],
+                query: str = "", limit: int = 8, label_where: str = "label <> ''",
+                order_sql: str = "count DESC") -> list[dict]:
+    where_sql, params = _gallery_filter_sql(_facet_filter(filters, exclude), query)
+    rows = conn.execute(
+        f"""WITH asset_meta AS (
+               SELECT asset_id,
+                      COALESCE(MAX(CASE WHEN extractor='exiftool' AND status='ok' THEN NULLIF(json_extract(raw_json, '$.device_name'), 'Desconhecido') END),
+                               MAX(NULLIF(json_extract(raw_json, '$.device_name'), 'Desconhecido')),
+                               MAX(json_extract(raw_json, '$.device_name')), 'Desconhecido') AS device_name,
+                      COALESCE(MAX(CASE WHEN extractor='exiftool' AND status='ok' THEN NULLIF(NULLIF(json_extract(raw_json, '$.device_type'), ''), 'unknown') END),
+                               MAX(NULLIF(NULLIF(json_extract(raw_json, '$.device_type'), ''), 'unknown')), 'unknown') AS device_type,
+                      COALESCE(MAX(CASE WHEN extractor='exiftool' AND status='ok' THEN NULLIF(json_extract(raw_json, '$.camera_make'), '') END), MAX(COALESCE(json_extract(raw_json, '$.camera_make'), ''))) AS camera_make,
+                      COALESCE(MAX(CASE WHEN extractor='exiftool' AND status='ok' THEN NULLIF(json_extract(raw_json, '$.camera_model'), '') END), MAX(COALESCE(json_extract(raw_json, '$.camera_model'), ''))) AS camera_model,
+                      COALESCE(MAX(CASE WHEN extractor='exiftool' AND status='ok' THEN NULLIF(json_extract(raw_json, '$.lens_model'), '') END), MAX(COALESCE(json_extract(raw_json, '$.lens_model'), ''))) AS lens_model
+               FROM metadata_extractions
+               GROUP BY asset_id
+           ),
+           tag_meta AS (
+               SELECT at.asset_id, GROUP_CONCAT(ct.label, ', ') AS tags
+               FROM asset_tags at
+               JOIN catalog_tags ct ON ct.id = at.tag_id
+               GROUP BY at.asset_id
+           ),
+           filtered AS (
+               SELECT a.size AS size,
+                      {label_sql} AS label
+               FROM asset_instances ai
+               JOIN assets a ON a.id = ai.asset_id
+               LEFT JOIN asset_meta am ON am.asset_id = a.id
+               LEFT JOIN tag_meta tm ON tm.asset_id = a.id
+               WHERE ai.role = 'destination' {where_sql}
+           )
+           SELECT label,
+                  COUNT(*) AS count,
+                  COALESCE(SUM(size), 0) AS bytes
+           FROM filtered
+           WHERE {label_where}
+           GROUP BY label
+           ORDER BY {order_sql}
+           LIMIT ?""",
+        [*params, limit],
+    ).fetchall()
+    return [{'label': row['label'], 'count': row['count'] or 0, 'bytes': row['bytes'] or 0} for row in rows]
+
+
+def gallery_breakdowns(limit: int = 8, filters: Optional[dict] = None, query: str = "") -> dict:
+    """Return grouped gallery facets scoped by the currently active filters."""
+    device_type_sql = """CASE
+        WHEN COALESCE(am.device_type, 'unknown') <> 'unknown' THEN am.device_type
+        WHEN lower(COALESCE(am.device_name, '')) LIKE '%dji%' OR lower(COALESCE(am.device_name, '')) LIKE '%drone%' THEN 'drone'
+        WHEN lower(COALESCE(am.device_name, '')) LIKE '%iphone%' OR lower(COALESCE(am.device_name, '')) LIKE '%samsung%' OR lower(COALESCE(am.device_name, '')) LIKE '%sm-%' THEN 'phone'
+        WHEN lower(COALESCE(am.device_name, '')) LIKE '%adobe%' OR lower(COALESCE(am.device_name, '')) LIKE '%lightroom%' THEN 'app'
+        WHEN lower(COALESCE(am.device_name, '')) LIKE '%canon%' OR lower(COALESCE(am.device_name, '')) LIKE '%nikon%' OR lower(COALESCE(am.device_name, '')) LIKE '%sony%' OR lower(COALESCE(am.device_name, '')) LIKE '%fujifilm%' OR lower(COALESCE(am.device_name, '')) LIKE '%gopro%' THEN 'camera'
+        ELSE 'unknown'
+    END"""
+    camera_sql = """COALESCE(
+        NULLIF(TRIM(
+          CASE
+            WHEN lower(COALESCE(am.camera_make, '')) LIKE '%dji%' THEN 'DJI'
+            WHEN upper(COALESCE(am.camera_model, '')) LIKE 'FC%' THEN 'DJI'
+            ELSE COALESCE(am.camera_make, '')
+          END || ' ' ||
+          CASE
+            WHEN upper(COALESCE(am.camera_model, '')) LIKE 'DJI %' THEN substr(COALESCE(am.camera_model, ''), 5)
+            ELSE COALESCE(am.camera_model, '')
+          END
+        ), ''),
+        COALESCE(am.device_name, '')
+    )"""
+    size_sql = """CASE
+        WHEN COALESCE(a.size, 0) >= 52428800 THEN 'large'
+        WHEN COALESCE(a.size, 0) <= 10485760 THEN 'small'
+        ELSE 'medium'
+    END"""
     with _get_conn() as conn:
-        media = conn.execute(
-            """SELECT COALESCE(a.media_type, 'other') AS label,
-                      COUNT(*) AS count,
-                      COALESCE(SUM(a.size), 0) AS bytes
-               FROM asset_instances ai
-               JOIN assets a ON a.id = ai.asset_id
-               WHERE ai.role = 'destination'
-               GROUP BY COALESCE(a.media_type, 'other')
-               ORDER BY count DESC"""
-        ).fetchall()
-        years = conn.execute(
-            """SELECT COALESCE(strftime('%Y', a.date_taken), 'Sem data') AS label,
-                      COUNT(*) AS count,
-                      COALESCE(SUM(a.size), 0) AS bytes
-               FROM asset_instances ai
-               JOIN assets a ON a.id = ai.asset_id
-               WHERE ai.role = 'destination'
-               GROUP BY label
-               ORDER BY label DESC
-               LIMIT ?""",
-            (limit,),
-        ).fetchall()
-        months = conn.execute(
-            """SELECT COALESCE(strftime('%Y-%m', a.date_taken), 'Sem data') AS label,
-                      COUNT(*) AS count,
-                      COALESCE(SUM(a.size), 0) AS bytes
-               FROM asset_instances ai
-               JOIN assets a ON a.id = ai.asset_id
-               WHERE ai.role = 'destination'
-               GROUP BY label
-               ORDER BY label DESC
-               LIMIT ?""",
-            (limit,),
-        ).fetchall()
-        extensions = conn.execute(
-            """SELECT COALESCE(a.extension, 'sem extensao') AS label,
-                      COUNT(*) AS count,
-                      COALESCE(SUM(a.size), 0) AS bytes
-               FROM asset_instances ai
-               JOIN assets a ON a.id = ai.asset_id
-               WHERE ai.role = 'destination'
-               GROUP BY COALESCE(a.extension, 'sem extensao')
-               ORDER BY count DESC
-               LIMIT ?""",
-            (limit,),
-        ).fetchall()
-        devices = conn.execute(
-            """WITH asset_meta AS (
-                   SELECT asset_id,
-                          COALESCE(
-                            MAX(NULLIF(json_extract(raw_json, '$.device_name'), 'Desconhecido')),
-                            MAX(json_extract(raw_json, '$.device_name')),
-                            'Desconhecido'
-                          ) AS label
-                   FROM metadata_extractions
-                   GROUP BY asset_id
-               )
-               SELECT COALESCE(am.label, 'Desconhecido') AS label,
-                      COUNT(*) AS count,
-                      COALESCE(SUM(a.size), 0) AS bytes
-               FROM asset_instances ai
-               JOIN assets a ON a.id = ai.asset_id
-               LEFT JOIN asset_meta am ON am.asset_id = a.id
-               WHERE ai.role = 'destination'
-               GROUP BY label
-               ORDER BY count DESC
-               LIMIT ?""",
-            (limit,),
-        ).fetchall()
-        device_types = conn.execute(
-            """WITH asset_meta AS (
-                   SELECT asset_id,
-                          COALESCE(
-                            MAX(NULLIF(json_extract(raw_json, '$.device_name'), 'Desconhecido')),
-                            MAX(json_extract(raw_json, '$.device_name')),
-                            ''
-                          ) AS device_name,
-                          COALESCE(
-                            MAX(NULLIF(NULLIF(json_extract(raw_json, '$.device_type'), ''), 'unknown')),
-                            'unknown'
-                          ) AS device_type
-                   FROM metadata_extractions
-                   GROUP BY asset_id
-               ),
-               typed AS (
-                   SELECT a.id AS asset_id,
-                          a.size AS size,
-                          CASE
-                            WHEN COALESCE(am.device_type, 'unknown') <> 'unknown' THEN am.device_type
-                            WHEN lower(COALESCE(am.device_name, '')) LIKE '%dji%' OR lower(COALESCE(am.device_name, '')) LIKE '%drone%' THEN 'drone'
-                            WHEN lower(COALESCE(am.device_name, '')) LIKE '%iphone%' OR lower(COALESCE(am.device_name, '')) LIKE '%samsung%' OR lower(COALESCE(am.device_name, '')) LIKE '%sm-%' THEN 'phone'
-                            WHEN lower(COALESCE(am.device_name, '')) LIKE '%adobe%' OR lower(COALESCE(am.device_name, '')) LIKE '%lightroom%' THEN 'app'
-                            WHEN lower(COALESCE(am.device_name, '')) LIKE '%canon%' OR lower(COALESCE(am.device_name, '')) LIKE '%nikon%' OR lower(COALESCE(am.device_name, '')) LIKE '%sony%' OR lower(COALESCE(am.device_name, '')) LIKE '%fujifilm%' OR lower(COALESCE(am.device_name, '')) LIKE '%gopro%' THEN 'camera'
-                            ELSE 'unknown'
-                          END AS label
-                   FROM asset_instances ai
-                   JOIN assets a ON a.id = ai.asset_id
-                   LEFT JOIN asset_meta am ON am.asset_id = a.id
-                   WHERE ai.role = 'destination'
-               )
-               SELECT label,
-                      COUNT(*) AS count,
-                      COALESCE(SUM(size), 0) AS bytes
-               FROM typed
-               GROUP BY label
-               ORDER BY count DESC
-               LIMIT ?""",
-            (limit,),
-        ).fetchall()
-        cameras = conn.execute(
-            """WITH asset_meta AS (
-                   SELECT asset_id,
-                          COALESCE(
-                            NULLIF(MAX(TRIM(
-                              CASE
-                                WHEN lower(COALESCE(json_extract(raw_json, '$.camera_make'), '')) LIKE '%dji%' THEN 'DJI'
-                                WHEN upper(COALESCE(json_extract(raw_json, '$.camera_model'), '')) LIKE 'FC%' THEN 'DJI'
-                                ELSE COALESCE(json_extract(raw_json, '$.camera_make'), '')
-                              END || ' ' ||
-                              CASE
-                                WHEN upper(COALESCE(json_extract(raw_json, '$.camera_model'), '')) LIKE 'DJI %'
-                                  THEN substr(COALESCE(json_extract(raw_json, '$.camera_model'), ''), 5)
-                                ELSE COALESCE(json_extract(raw_json, '$.camera_model'), '')
-                              END
-                            )), ''),
-                            COALESCE(
-                              MAX(NULLIF(json_extract(raw_json, '$.device_name'), 'Desconhecido')),
-                              MAX(json_extract(raw_json, '$.device_name')),
-                              ''
-                            )
-                          ) AS label
-                   FROM metadata_extractions
-                   GROUP BY asset_id
-               )
-               SELECT am.label AS label,
-                      COUNT(*) AS count,
-                      COALESCE(SUM(a.size), 0) AS bytes
-               FROM asset_instances ai
-               JOIN assets a ON a.id = ai.asset_id
-               LEFT JOIN asset_meta am ON am.asset_id = a.id
-               WHERE ai.role = 'destination'
-                 AND am.label <> ''
-                 AND am.label <> 'Desconhecido'
-               GROUP BY am.label
-               ORDER BY count DESC
-               LIMIT ?""",
-            (limit,),
-        ).fetchall()
-        lenses = conn.execute(
-            """WITH asset_meta AS (
-                   SELECT asset_id,
-                          COALESCE(
-                            MAX(CASE WHEN extractor='exiftool' AND status='ok' THEN NULLIF(json_extract(raw_json, '$.lens_model'), '') END),
-                            MAX(NULLIF(json_extract(raw_json, '$.lens_model'), '')),
-                            ''
-                          ) AS label
-                   FROM metadata_extractions
-                   GROUP BY asset_id
-               )
-               SELECT am.label AS label,
-                      COUNT(*) AS count,
-                      COALESCE(SUM(a.size), 0) AS bytes
-               FROM asset_instances ai
-               JOIN assets a ON a.id = ai.asset_id
-               LEFT JOIN asset_meta am ON am.asset_id = a.id
-               WHERE ai.role = 'destination'
-                 AND am.label <> ''
-                 AND am.label <> 'Desconhecido'
-               GROUP BY am.label
-               ORDER BY count DESC
-               LIMIT ?""",
-            (limit,),
-        ).fetchall()
-        sizes = conn.execute(
-            """WITH sized AS (
-                   SELECT a.size,
-                          CASE
-                            WHEN COALESCE(a.size, 0) >= ? THEN 'large'
-                            WHEN COALESCE(a.size, 0) <= ? THEN 'small'
-                            ELSE 'medium'
-                          END AS label
-                   FROM asset_instances ai
-                   JOIN assets a ON a.id = ai.asset_id
-                   WHERE ai.role = 'destination'
-               )
-               SELECT label,
-                      COUNT(*) AS count,
-                      COALESCE(SUM(size), 0) AS bytes
-               FROM sized
-               GROUP BY label
-               ORDER BY CASE label WHEN 'large' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END""",
-            (50 * 1024 * 1024, 10 * 1024 * 1024),
-        ).fetchall()
-
-    def rows(values):
-        return [{'label': row['label'], 'count': row['count'] or 0, 'bytes': row['bytes'] or 0} for row in values]
-
-    return {
-        'media': rows(media),
-        'years': rows(years),
-        'months': rows(months),
-        'extensions': rows(extensions),
-        'devices': rows(devices),
-        'deviceTypes': rows(device_types),
-        'cameras': rows(cameras),
-        'lenses': rows(lenses),
-        'sizes': rows(sizes),
-    }
+        return {
+            'media': _facet_rows(conn, "COALESCE(a.media_type, 'other')", filters, {'media', 'media_type'}, query, limit, order_sql="count DESC"),
+            'years': _facet_rows(conn, "COALESCE(strftime('%Y', a.date_taken), 'Sem data')", filters, {'year', 'month'}, query, limit, order_sql="label DESC"),
+            'months': _facet_rows(conn, "COALESCE(strftime('%Y-%m', a.date_taken), 'Sem data')", filters, {'month'}, query, limit, order_sql="label DESC"),
+            'extensions': _facet_rows(conn, "COALESCE(a.extension, 'sem extensao')", filters, {'extension'}, query, limit, order_sql="count DESC"),
+            'devices': _facet_rows(conn, "COALESCE(am.device_name, 'Desconhecido')", filters, {'device'}, query, limit, order_sql="count DESC"),
+            'deviceTypes': _facet_rows(conn, device_type_sql, filters, {'deviceType', 'device_type'}, query, limit, order_sql="count DESC"),
+            'cameras': _facet_rows(conn, camera_sql, filters, {'camera'}, query, limit, "label <> '' AND label <> 'Desconhecido'", "count DESC"),
+            'lenses': _facet_rows(conn, "COALESCE(am.lens_model, '')", filters, {'lens'}, query, limit, "label <> '' AND label <> 'Desconhecido'", "count DESC"),
+            'sizes': _facet_rows(conn, size_sql, filters, {'size'}, query, 3, order_sql="CASE label WHEN 'large' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END"),
+        }
 
 
 def create_ingest_plan(vault_id: int, mode: str = 'copy', summary: Optional[dict] = None) -> int:

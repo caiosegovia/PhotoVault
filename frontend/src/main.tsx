@@ -1554,6 +1554,7 @@ function GalleryView({
   const hasMoreItems = Boolean(gallery.page?.hasMore);
   const typeOptions = gallery.breakdowns.media;
   const yearOptions = gallery.breakdowns.years;
+  const monthOptions = gallery.breakdowns.months ?? [];
   const extensionOptions = gallery.breakdowns.extensions.map((item) => ({ ...item, label: `.${normalizeExtension(item.label)}` }));
   const deviceOptions = gallery.breakdowns.devices ?? [];
   const cameraOptions = gallery.breakdowns.cameras ?? [];
@@ -1570,6 +1571,7 @@ function GalleryView({
     filter.year,
     filter.month,
     filter.extension,
+    filter.deviceType,
     filter.device,
     filter.camera,
     filter.lens,
@@ -1599,6 +1601,7 @@ function GalleryView({
           <div className="header-filter-row">
             <HeaderFilterMenu id="media" openId={openFilter} onOpen={setOpenFilter} title="Tipo" active={filter.media} totalLabel="Todos" total={gallery.total} options={typeOptions} labelFor={mediaLabel} onPick={(value) => onFilter({ media: normalizeMediaLabel(value) })} />
             <HeaderFilterMenu id="year" openId={openFilter} onOpen={setOpenFilter} title="Ano" active={filter.year} totalLabel="Todos" total={gallery.total} options={yearOptions} onPick={(value) => onFilter({ year: value })} />
+            <HeaderFilterMenu id="month" openId={openFilter} onOpen={setOpenFilter} title="Mes" active={filter.month} totalLabel="Todos" total={gallery.total} options={monthOptions} onPick={(value) => onFilter({ month: value })} />
             <HeaderFilterMenu id="extension" openId={openFilter} onOpen={setOpenFilter} title="Extensao" active={normalizeExtension(filter.extension) === "all" ? "all" : `.${normalizeExtension(filter.extension)}`} totalLabel="Todas" total={gallery.total} options={extensionOptions} onPick={(value) => onFilter({ extension: normalizeExtension(value) })} />
             <HeaderFilterMenu id="device" openId={openFilter} onOpen={setOpenFilter} title="Dispositivo" active={filter.device} totalLabel="Todos" total={gallery.total} options={deviceOptions} onPick={(value) => onFilter({ device: value })} />
             <HeaderFilterMenu id="camera" openId={openFilter} onOpen={setOpenFilter} title="Camera" active={filter.camera} totalLabel="Todas" total={gallery.total} options={cameraOptions} onPick={(value) => onFilter({ camera: value })} />

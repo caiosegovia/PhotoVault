@@ -303,7 +303,7 @@ def _gallery_payload(
     backfill_at = time.perf_counter()
     gallery_total = gallery_totals()
     totals_at = time.perf_counter()
-    breakdowns = gallery_breakdowns()
+    breakdowns = gallery_breakdowns(filters=filters if include_items else None, query=query if include_items else "")
     breakdowns_at = time.perf_counter()
     duplicate_savings = duplicate_savings_total()
     filtered_total = count_gallery_assets(filters=filters, query=query) if include_items else gallery_total['total']

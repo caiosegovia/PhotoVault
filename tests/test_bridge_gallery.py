@@ -19,7 +19,7 @@ def test_gallery_payload_lists_assets_once_after_backfill(monkeypatch):
         'month_count': 1,
         'extension_count': 1,
     })
-    monkeypatch.setattr(bridge, 'gallery_breakdowns', lambda: {
+    monkeypatch.setattr(bridge, 'gallery_breakdowns', lambda **_kwargs: {
         'media': [],
         'years': [],
         'months': [],
@@ -115,7 +115,7 @@ def test_state_returns_gallery_summary_without_loading_items(monkeypatch):
         'month_count': 30,
         'extension_count': 8,
     })
-    monkeypatch.setattr(bridge, 'gallery_breakdowns', lambda: {
+    monkeypatch.setattr(bridge, 'gallery_breakdowns', lambda **_kwargs: {
         'media': [],
         'years': [],
         'months': [],
@@ -168,7 +168,7 @@ def test_gallery_payload_can_hydrate_thumbnails_in_same_pass(tmp_path, monkeypat
         'month_count': 0,
         'extension_count': 1,
     })
-    monkeypatch.setattr(bridge, 'gallery_breakdowns', lambda: {
+    monkeypatch.setattr(bridge, 'gallery_breakdowns', lambda **_kwargs: {
         'media': [],
         'years': [],
         'months': [],
@@ -343,3 +343,7 @@ def test_gallery_facets_round_trip_against_real_sqlite(tmp_path, monkeypatch):
     combo = bridge.gallery({'limit': 10, 'filter': {'media': 'photo', 'month': '2026-06', 'device': 'DJI FC7303'}})
     assert combo['filteredTotal'] == 2
     assert {item['extension'] for item in combo['items']} == {'jpg', 'dng'}
+
+    scoped = bridge.gallery({'limit': 10, 'filter': {'month': '2026-06', 'device': 'DJI FC7303'}})
+    assert {item['label'].lstrip('.') for item in scoped['breakdowns']['extensions']} == {'jpg', 'dng'}
+    assert all(item['count'] > 0 for item in scoped['breakdowns']['extensions'])
