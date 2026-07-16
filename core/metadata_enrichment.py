@@ -234,7 +234,8 @@ def extract_exiftool_metadata(path: Path) -> dict:
     return normalize_exiftool_metadata(path, payload[0])
 
 
-def enrich_gallery_metadata(limit: int = 1000, callback: Optional[Callable[[int, int, Path], None]] = None) -> EnrichmentResult:
+def enrich_gallery_metadata(limit: int = 1000, callback: Optional[Callable[[int, int, Path], None]] = None,
+                            include_errors: bool = True) -> EnrichmentResult:
     from core.database import apply_asset_metadata_enrichment, list_destination_assets_for_enrichment, mark_processing_started, processing_summary
 
     result = EnrichmentResult()
@@ -243,7 +244,7 @@ def enrich_gallery_metadata(limit: int = 1000, callback: Optional[Callable[[int,
         result.processing = processing_summary("exiftool")
         return result
 
-    rows = list_destination_assets_for_enrichment(limit)
+    rows = list_destination_assets_for_enrichment(limit, include_errors=include_errors)
     result.total = len(rows)
     version = exiftool_version() or "unknown"
     for index, row in enumerate(rows, start=1):

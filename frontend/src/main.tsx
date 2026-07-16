@@ -795,13 +795,9 @@ function App() {
     startProgressPolling();
     try {
       await callBridge("execute_import", { planId: selectedImport.planId, verifyMode: "size" });
-      if (gallery.capabilities?.exiftoolAvailable) {
-        setMessage("Importacao concluida. Gerando metadados tecnicos...");
-        await callBridge("enrich_metadata", { limit: 2000 });
-      }
       await loadState(selectedImport.id);
       setActiveView("gallery");
-      setMessage(gallery.capabilities?.exiftoolAvailable ? "Importacao e metadados concluidos." : "Importacao executada.");
+      setMessage("Importacao, metadados e previews processados.");
     } catch (error) {
       await loadState(selectedImport.id);
       setMessage(`Erro ao executar importacao: ${String(error)}`);
@@ -1301,40 +1297,30 @@ function GalleryHealthSection({
     },
     { running: 0, error: 0, done: 0 },
   );
+  const metadataPct = health.total ? Math.max(0, Math.round(((health.total - (health.metadataPending || 0)) / health.total) * 100)) : 100;
+  const datedPct = health.total ? Math.max(0, Math.round(((health.total - (health.withoutDate || 0)) / health.total) * 100)) : 100;
+  const jobHealthPct = jobCounts.running || jobCounts.error ? Math.max(0, 100 - jobCounts.error * 20) : 100;
+  const scoreLabel = score >= 85 ? "Saudavel" : score >= 65 ? "Atencao" : "Critica";
   return (
     <section className={`gallery-health-section ${tone}`}>
-      <div className="gallery-health-main">
-        <div className="health-score">
-          <Gauge size={20} />
-          <span>Saude da galeria</span>
+      <div className="health-pill-bar">
+        <div className={`health-score-pill ${tone}`}>
+          <Gauge size={17} />
+          <span>Saude</span>
           <strong>{score}</strong>
-          <em>{summary}</em>
+          <em>{scoreLabel}</em>
         </div>
-        <div className="health-signal-grid">
-          <Signal label="Espaco livre" value={`${formatBytes(disk.free)} (${freePct}%)`} tone={freePct > 15 ? "good" : "bad"} />
-          <Signal label="Metadados pendentes" value={formatNumber(health.metadataPending || 0)} tone={health.metadataPending ? "bad" : "good"} />
-          <Signal label="Sem data de captura" value={formatNumber(health.withoutDate || 0)} tone={health.withoutDate ? "bad" : "good"} />
-          <Signal label="Ultimo job" value={selectedImport ? statusLabel(selectedImport.status) : "Sem job ativo"} />
-          <Signal label="Dependencias" value={diagnostics.requiredMissing ? `${formatNumber(diagnostics.requiredMissing)} pendente(s)` : "OK"} tone={diagnostics.requiredMissing ? "bad" : "good"} />
-          <Signal label="Erros recentes" value={formatNumber(errors)} tone={errors ? "bad" : "good"} />
-        </div>
+        <Signal label="Espaco livre" value={`${formatBytes(disk.free)} (${freePct}%)`} tone={freePct > 15 ? "good" : "bad"} />
+        <Signal label="Metadados" value={`${formatNumber(health.metadataPending || 0)} pend.`} tone={health.metadataPending ? "bad" : "good"} />
+        <Signal label="Datas" value={`${formatNumber(health.withoutDate || 0)} sem data`} tone={health.withoutDate ? "bad" : "good"} />
+        <Signal label="Dependencias" value={diagnostics.requiredMissing ? `${formatNumber(diagnostics.requiredMissing)} pend.` : "OK"} tone={diagnostics.requiredMissing ? "bad" : "good"} />
+        <Signal label="Erros" value={formatNumber(errors)} tone={errors ? "bad" : "good"} />
       </div>
-      <div className="health-executive-grid">
-        <article>
-          <span>Ambiente</span>
-          <strong>{diagnostics.requiredMissing ? "Acao necessaria" : "Operacional"}</strong>
-          <em>{diagnostics.summary}</em>
-        </article>
-        <article>
-          <span>Catalogo</span>
-          <strong>{formatNumber(gallery.total)} itens</strong>
-          <em>{formatNumber(health.withoutDate || 0)} sem data | {formatNumber(health.metadataPending || 0)} metadata pendente</em>
-        </article>
-        <article>
-          <span>Jobs</span>
-          <strong>{formatNumber(jobCounts.running)} rodando</strong>
-          <em>{formatNumber(jobCounts.done)} concluidos | {formatNumber(jobCounts.error)} com erro</em>
-        </article>
+      <div className="health-overview-grid">
+        <HealthGaugeCard label="Catalogo" value={`${formatNumber(gallery.total)} itens`} detail={summary} pct={score} tone={tone} />
+        <HealthGaugeCard label="Metadados" value={`${metadataPct}% ok`} detail={`${formatNumber(health.metadataPending || 0)} pendentes`} pct={metadataPct} tone={health.metadataPending ? "warn" : "good"} />
+        <HealthGaugeCard label="Timeline" value={`${datedPct}% datado`} detail={`${formatNumber(health.withoutDate || 0)} sem captura`} pct={datedPct} tone={health.withoutDate ? "warn" : "good"} />
+        <HealthGaugeCard label="Jobs" value={`${formatNumber(jobCounts.running)} rodando`} detail={`${formatNumber(jobCounts.done)} concluidos | ${formatNumber(jobCounts.error)} erro(s)`} pct={jobHealthPct} tone={jobCounts.error ? "bad" : jobCounts.running ? "warn" : "good"} />
       </div>
       <div className="health-action-row">
         <button className="secondary" onClick={onHealth}><RotateCcw size={15} /> Atualizar saude</button>
@@ -1353,6 +1339,19 @@ function GalleryHealthSection({
         </div>
       ) : null}
     </section>
+  );
+}
+
+function HealthGaugeCard({ label, value, detail, pct, tone }: { label: string; value: string; detail: string; pct: number; tone: "good" | "warn" | "bad" }) {
+  return (
+    <article className={`health-gauge-card ${tone}`}>
+      <div>
+        <span>{label}</span>
+        <strong>{value}</strong>
+        <em>{detail}</em>
+      </div>
+      <i><b style={{ width: `${Math.max(0, Math.min(pct, 100))}%` }} /></i>
+    </article>
   );
 }
 
@@ -2639,6 +2638,16 @@ function ProgressPanel({ progress, embedded = false, onDismiss }: { progress: Pr
       </div>
       <div className={progress?.status === "running" ? "progress-track running" : "progress-track"}><i style={{ width: `${ratio * 100}%` }} /></div>
       <p>{progress?.message ?? "Sem processo em andamento."}</p>
+      {metrics?.steps?.length ? (
+        <div className="progress-step-row">
+          {metrics.steps.map((step) => (
+            <span key={step.id} className={`progress-step ${step.status}`}>
+              <b>{step.label}</b>
+              <em>{progressStepLabel(step.status)}</em>
+            </span>
+          ))}
+        </div>
+      ) : null}
       {metrics ? (
         <div className="progress-metrics">
           <span><b>{(metrics.throughputMbps ?? 0).toFixed(1)}</b> MB/s</span>
@@ -2649,6 +2658,19 @@ function ProgressPanel({ progress, embedded = false, onDismiss }: { progress: Pr
       ) : null}
     </section>
   );
+}
+
+function progressStepLabel(status?: string) {
+  return {
+    pending: "Pendente",
+    running: "Rodando",
+    paused: "Pausado",
+    done: "OK",
+    warning: "Aviso",
+    error: "Erro",
+    failed: "Erro",
+    cancelled: "Cancelado",
+  }[status || ""] ?? (status || "-");
 }
 
 function EmptyState({ text }: { text: string }) {

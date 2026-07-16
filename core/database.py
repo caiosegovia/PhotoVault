@@ -619,9 +619,11 @@ def save_asset_metadata(asset_id: int, path: str, extractor: str, raw: dict,
         )
 
 
-def list_destination_assets_for_enrichment(limit: int = 1000) -> list[dict]:
+def list_destination_assets_for_enrichment(limit: int = 1000, include_errors: bool = True) -> list[dict]:
     """Return destination assets that still need ExifTool processing."""
     ensure_processing_coverage('exiftool')
+    statuses = ('pending', 'error', 'stale') if include_errors else ('pending', 'stale')
+    placeholders = ",".join("?" for _ in statuses)
     with _get_conn() as conn:
         rows = conn.execute(
             """SELECT
@@ -644,13 +646,13 @@ def list_destination_assets_for_enrichment(limit: int = 1000) -> list[dict]:
                JOIN assets a ON a.id = ai.asset_id
                WHERE ai.role = 'destination'
                  AND ps.processor = 'exiftool'
-                 AND ps.status IN ('pending', 'error', 'stale')
+                 AND ps.status IN ({statuses})
                ORDER BY
                    CASE ps.status WHEN 'pending' THEN 0 WHEN 'stale' THEN 1 ELSE 2 END,
                    ps.updated_at,
                    ai.id DESC
-               LIMIT ?""",
-            (limit,),
+               LIMIT ?""".format(statuses=placeholders),
+            (*statuses, limit),
         ).fetchall()
     return [dict(row) for row in rows]
 

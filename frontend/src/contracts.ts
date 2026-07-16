@@ -97,6 +97,7 @@ export type ProgressInfo = {
 };
 
 export type ProgressMetrics = {
+  steps?: ProgressStep[];
   elapsedSeconds?: number;
   etaSeconds?: number;
   throughputMbps?: number;
@@ -108,6 +109,12 @@ export type ProgressMetrics = {
   lastFileSeconds?: number;
   largestFile?: CopyFileMetric;
   slowestFile?: CopyFileMetric;
+};
+
+export type ProgressStep = {
+  id: string;
+  label: string;
+  status: "pending" | "running" | "paused" | "done" | "warning" | "error" | "failed" | "cancelled" | string;
 };
 
 export type CopyFileMetric = { path: string; bytes: number; seconds: number; mbps: number };

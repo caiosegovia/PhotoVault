@@ -96,6 +96,36 @@ def _write_progress(stage: str, message: str, current: int = 0, total: int = 0,
         log.warning("progress write failed stage=%s", stage)
 
 
+def _pipeline_steps(active: str, statuses: dict[str, str] | None = None) -> list[dict]:
+    statuses = statuses or {}
+    labels = [
+        ('analysis', 'Analise'),
+        ('copy', 'Copia'),
+        ('metadata', 'Metadados'),
+        ('previews', 'Previews'),
+        ('finalize', 'Finalizacao'),
+    ]
+    return [
+        {
+            'id': step,
+            'label': label,
+            'status': statuses.get(step) or ('running' if step == active else 'pending'),
+        }
+        for step, label in labels
+    ]
+
+
+def _wait_if_paused_or_cancelled(job_id: int, stage: str, message: str) -> str:
+    while True:
+        job = get_background_job(job_id)
+        status = (job or {}).get('status') or 'running'
+        if status == 'paused':
+            _write_progress(stage, message, status='paused')
+            time.sleep(1.0)
+            continue
+        return status
+
+
 def _progress_payload() -> dict:
     if not PROGRESS_PATH.exists():
         return {
@@ -420,7 +450,7 @@ def state(_payload: dict) -> dict:
     progress_at = time.perf_counter()
     diagnostics_data = environment_diagnostics()
     diagnostics_at = time.perf_counter()
-    health_data = gallery_health()
+    health_data = health({})
     health_at = time.perf_counter()
     return {
         'vault': {
@@ -620,6 +650,84 @@ def deterministic_insights(health_data: dict) -> list[dict]:
     return insights
 
 
+def _run_metadata_batches(job_id: int, batch_size: int = 2000, step_status: dict | None = None) -> dict:
+    step_status = step_status or {'analysis': 'done', 'copy': 'done', 'metadata': 'running', 'previews': 'pending', 'finalize': 'pending'}
+    totals = {'total': 0, 'enriched': 0, 'skipped': 0, 'errors': 0, 'unavailable': False}
+    batch = 0
+    while True:
+        status = _wait_if_paused_or_cancelled(job_id, 'metadata', 'Metadados pausados. Retome em Jobs para continuar.')
+        if status == 'cancelled':
+            totals['cancelled'] = True
+            return totals
+        batch += 1
+
+        def on_progress(current: int, total: int, path: Path) -> None:
+            if current == 1 or current == total or current % 10 == 0:
+                done = totals['total'] + current
+                _write_progress(
+                    'metadata',
+                    f'Metadados lote {batch}: {current} de {total}...',
+                    current=done,
+                    total=done + max(total - current, 0),
+                    path=str(path),
+                    metrics={'steps': _pipeline_steps('metadata', step_status), **totals},
+                )
+
+        result = enrich_gallery_metadata(limit=batch_size, callback=on_progress, include_errors=False)
+        if result.unavailable:
+            totals['unavailable'] = True
+            return totals
+        if result.total == 0:
+            return totals
+        totals['total'] += result.total
+        totals['enriched'] += result.enriched
+        totals['skipped'] += result.skipped
+        totals['errors'] += result.errors
+        _write_progress(
+            'metadata',
+            f'Metadados: {totals["enriched"]} atualizados, {totals["skipped"]} ignorados, {totals["errors"]} erros.',
+            current=totals['total'],
+            total=totals['total'],
+            metrics={'steps': _pipeline_steps('metadata', step_status), **totals},
+        )
+        if result.total < batch_size:
+            return totals
+
+
+def _run_preview_generation(job_id: int, limit: int = GALLERY_ITEM_LIMIT, step_status: dict | None = None) -> dict:
+    step_status = step_status or {'analysis': 'done', 'copy': 'done', 'metadata': 'done', 'previews': 'running', 'finalize': 'pending'}
+    assets = list_gallery_assets(limit=limit, offset=0)
+    result = {'total': len(assets), 'generated': 0, 'skipped': 0, 'errors': 0}
+    for index, item in enumerate(assets, start=1):
+        status = _wait_if_paused_or_cancelled(job_id, 'previews', 'Previews pausados. Retome em Jobs para continuar.')
+        if status == 'cancelled':
+            result['cancelled'] = True
+            return result
+        path = Path(item.get('path') or '')
+        try:
+            if not path.exists():
+                result['skipped'] += 1
+            else:
+                thumb = ensure_thumbnail(path)
+                if thumb:
+                    result['generated'] += 1
+                else:
+                    result['skipped'] += 1
+        except Exception as exc:
+            log.warning("preview generation failed path=%s error=%s", path, exc)
+            result['errors'] += 1
+        if index == 1 or index == result['total'] or index % 10 == 0:
+            _write_progress(
+                'previews',
+                f'Previews: {index} de {result["total"]}...',
+                current=index,
+                total=result['total'],
+                path=str(path),
+                metrics={'steps': _pipeline_steps('previews', step_status), **result},
+            )
+    return result
+
+
 def enrich_metadata(payload: dict) -> dict:
     init_db()
     limit = int(payload.get('limit') or 1000)
@@ -721,8 +829,17 @@ def execute_import(payload: dict) -> dict:
     if not plan_id:
         raise ValueError('planId obrigatório')
     log.info("bridge execute_import start plan_id=%s", plan_id)
-    job_id = start_background_job('import', 'plan', int(plan_id), {'verifyMode': payload.get('verifyMode') or 'size'})
-    _write_progress('execution', f'Executando plano {plan_id}...', path=str(plan_id))
+    job_id = start_background_job('import', 'plan', int(plan_id), {
+        'verifyMode': payload.get('verifyMode') or 'size',
+        'pipeline': ['copy', 'metadata', 'previews', 'finalize'],
+    })
+    step_status = {'analysis': 'done', 'copy': 'running', 'metadata': 'pending', 'previews': 'pending', 'finalize': 'pending'}
+    _write_progress(
+        'execution',
+        f'Executando plano {plan_id}...',
+        path=str(plan_id),
+        metrics={'steps': _pipeline_steps('copy', step_status)},
+    )
 
     execution_started = time.perf_counter()
     last_file_mbps = 0.0
@@ -782,7 +899,7 @@ def execute_import(payload: dict) -> dict:
             current=done,
             total=total,
             path=str(src),
-            metrics=progress_metrics,
+            metrics={**progress_metrics, 'steps': _pipeline_steps('copy', step_status)},
         )
 
     verify_mode = payload.get('verifyMode') or 'size'
@@ -809,34 +926,51 @@ def execute_import(payload: dict) -> dict:
         )
         finish_background_job(job_id, 'error', error=str(exc))
         raise
-    final_status = 'cancelled' if result.get('cancelled') else ('done' if result.get('errors', 0) == 0 else 'error')
-    finish_background_job(job_id, final_status, result, f"{result.get('errors', 0)} erro(s)" if final_status == 'error' else '')
-    final_message = 'Execucao cancelada.' if final_status == 'cancelled' else (
-        f'Execucao concluida: {result.get("processed", 0)} copiados, {result.get("skipped", 0)} ignorados, {result.get("errors", 0)} erros em {result.get("total_seconds", 0):.1f}s ({result.get("throughput_mbps", 0):.1f} MB/s).'
-    )
+    if result.get('cancelled'):
+        step_status['copy'] = 'cancelled'
+        finish_background_job(job_id, 'cancelled', result)
+        _write_progress('execution', 'Execucao cancelada.', current=result.get('total', 0), total=result.get('total', 0), status='cancelled',
+                        metrics={'steps': _pipeline_steps('copy', step_status), **result})
+        return {'ok': True, 'result': result}
+
+    step_status['copy'] = 'done' if result.get('errors', 0) == 0 else 'error'
+    if result.get('errors', 0):
+        finish_background_job(job_id, 'error', result, f"{result.get('errors', 0)} erro(s)")
+        _write_progress('execution', f'Importacao concluiu com {result.get("errors", 0)} erro(s).', status='error',
+                        metrics={'steps': _pipeline_steps('copy', step_status), **result})
+        return {'ok': True, 'result': result}
+
+    step_status['metadata'] = 'running'
+    metadata_result = _run_metadata_batches(job_id, batch_size=int(payload.get('metadataBatchSize') or 2000), step_status=step_status)
+    if metadata_result.get('cancelled'):
+        step_status['metadata'] = 'cancelled'
+        finish_background_job(job_id, 'cancelled', {'copy': result, 'metadata': metadata_result})
+        return {'ok': True, 'result': {'copy': result, 'metadata': metadata_result}}
+    step_status['metadata'] = 'warning' if metadata_result.get('unavailable') or metadata_result.get('errors') else 'done'
+
+    step_status['previews'] = 'running'
+    preview_result = _run_preview_generation(job_id, step_status=step_status)
+    if preview_result.get('cancelled'):
+        step_status['previews'] = 'cancelled'
+        finish_background_job(job_id, 'cancelled', {'copy': result, 'metadata': metadata_result, 'previews': preview_result})
+        return {'ok': True, 'result': {'copy': result, 'metadata': metadata_result, 'previews': preview_result}}
+    step_status['previews'] = 'warning' if preview_result.get('errors') else 'done'
+    step_status['finalize'] = 'running'
+
+    final_payload = {'copy': result, 'metadata': metadata_result, 'previews': preview_result}
+    final_status = 'warning' if step_status['metadata'] == 'warning' or step_status['previews'] == 'warning' else 'done'
+    step_status['finalize'] = final_status
+    finish_background_job(job_id, final_status, final_payload)
     _write_progress(
-        'execution',
-        final_message,
-        current=result.get('total', 0),
-        total=result.get('total', 0),
+        'finalize',
+        f'Importacao finalizada: {result.get("processed", 0)} copiados, {metadata_result.get("enriched", 0)} metadados, {preview_result.get("generated", 0)} previews.',
+        current=5,
+        total=5,
         status=final_status,
-        metrics={
-            'elapsedSeconds': result.get('total_seconds', 0),
-            'throughputMbps': result.get('throughput_mbps', 0),
-            'bytesImported': result.get('bytes_imported', 0),
-            'filesCopied': result.get('processed', 0),
-            'filesSkipped': result.get('skipped', 0),
-            'filesErrored': result.get('errors', 0),
-            'dbSeconds': result.get('db_seconds', 0),
-            'finalizeSeconds': result.get('finalize_seconds', 0),
-            'copySeconds': result.get('copy_seconds', 0),
-            'verifySeconds': result.get('verify_seconds', 0),
-            'largestFile': result.get('largest_file'),
-            'slowestFile': result.get('slowest_file'),
-        },
+        metrics={'steps': _pipeline_steps('finalize', step_status), **final_payload},
     )
-    log.info("bridge execute_import done plan_id=%s result=%s", plan_id, result)
-    return {'ok': True, 'result': result}
+    log.info("bridge execute_import done plan_id=%s result=%s metadata=%s previews=%s", plan_id, result, metadata_result, preview_result)
+    return {'ok': True, 'result': final_payload}
 
 
 def reset_all(_payload: dict) -> dict:

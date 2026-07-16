@@ -37,7 +37,7 @@ def test_gallery_payload_lists_assets_once_after_backfill(monkeypatch):
     monkeypatch.setattr(bridge, 'exiftool_status', lambda: {'available': False})
     monkeypatch.setattr(bridge, 'processing_summary', lambda _processor: {'total': 0})
     monkeypatch.setattr(bridge, 'environment_diagnostics', lambda: {'status': 'ok'})
-    monkeypatch.setattr(bridge, 'gallery_health', lambda: {'total': 0})
+    monkeypatch.setattr(bridge, 'health', lambda _payload: {'total': 0, 'jobs': {'import': {'done': 1}}, 'recentJobs': []})
 
     monkeypatch.setattr(bridge, 'count_gallery_assets', lambda filters=None, query='': 6)
 
@@ -133,7 +133,7 @@ def test_state_returns_gallery_summary_without_loading_items(monkeypatch):
     monkeypatch.setattr(bridge, 'exiftool_status', lambda: {'available': False})
     monkeypatch.setattr(bridge, 'processing_summary', lambda _processor: {'total': 0})
     monkeypatch.setattr(bridge, 'environment_diagnostics', lambda: {'status': 'ok'})
-    monkeypatch.setattr(bridge, 'gallery_health', lambda: {'total': 0})
+    monkeypatch.setattr(bridge, 'health', lambda _payload: {'total': 0, 'jobs': {'import': {'done': 1}}, 'recentJobs': []})
 
     result = bridge.state({})
 
@@ -141,6 +141,7 @@ def test_state_returns_gallery_summary_without_loading_items(monkeypatch):
     assert result['gallery']['items'] == []
     assert result['diagnostics']['status'] == 'ok'
     assert result['health']['total'] == 0
+    assert result['health']['jobs']['import']['done'] == 1
 
 
 def test_gallery_payload_can_hydrate_thumbnails_in_same_pass(tmp_path, monkeypatch):
@@ -203,6 +204,55 @@ def test_gallery_payload_can_hydrate_thumbnails_in_same_pass(tmp_path, monkeypat
     assert str(photo) in hydrated
     assert result['items'][0]['thumbnail'] == str(thumb)
     assert result['items'][0]['previewStatus'] == 'ready'
+
+
+def test_execute_import_runs_metadata_batches_and_previews(monkeypatch, tmp_path):
+    import bridge
+
+    photo = tmp_path / "photo.jpg"
+    photo.write_bytes(b"photo")
+    calls = []
+    jobs = {77: {'status': 'running'}}
+
+    monkeypatch.setattr(bridge, 'init_db', lambda: None)
+    monkeypatch.setattr(bridge, 'start_background_job', lambda *args, **kwargs: 77)
+    monkeypatch.setattr(bridge, 'get_background_job', lambda _job_id: jobs[77])
+    finished = []
+    monkeypatch.setattr(bridge, 'finish_background_job', lambda job_id, status='done', payload=None, error='': finished.append((job_id, status, payload, error)))
+    monkeypatch.setattr(bridge, '_write_progress', lambda stage, message, current=0, total=0, path='', status='running', metrics=None: calls.append((stage, status, message, metrics or {})))
+    monkeypatch.setattr(bridge, 'execute_ingest_plan', lambda plan_id, callback=None, control=None, verify_mode='size': {'total': 1, 'processed': 1, 'skipped': 0, 'errors': 0, 'bytes_imported': 5, 'total_seconds': 1, 'throughput_mbps': 1})
+
+    class Result:
+        def __init__(self, total):
+            self.total = total
+            self.enriched = total
+            self.skipped = 0
+            self.errors = 0
+            self.unavailable = False
+
+        def as_dict(self):
+            return {'total': self.total, 'enriched': self.enriched, 'skipped': 0, 'errors': 0, 'unavailable': False}
+
+    batches = [Result(2000), Result(3), Result(0)]
+
+    def enrich(limit=1000, callback=None, include_errors=True):
+        result = batches.pop(0)
+        if callback and result.total:
+            callback(result.total, result.total, photo)
+        return result
+
+    monkeypatch.setattr(bridge, 'enrich_gallery_metadata', enrich)
+    monkeypatch.setattr(bridge, 'list_gallery_assets', lambda limit=50000, offset=0, filters=None, query='', sort='': [{'path': str(photo)}])
+    monkeypatch.setattr(bridge, 'ensure_thumbnail', lambda path: tmp_path / "thumb.jpg")
+
+    result = bridge.execute_import({'planId': 12, 'metadataBatchSize': 2000})
+
+    assert result['result']['metadata']['enriched'] == 2003
+    assert result['result']['previews']['generated'] == 1
+    assert finished[-1][1] == 'done'
+    assert any(call[0] == 'metadata' for call in calls)
+    assert any(call[0] == 'previews' for call in calls)
+    assert any(call[0] == 'finalize' for call in calls)
 
 
 def test_search_gallery_uses_search_assets(monkeypatch):
