@@ -7,6 +7,7 @@
     "dev": "vite --host 127.0.0.1",
     "build": "tsc && vite build",
     "check": "tsc --noEmit",
+    "test:e2e": "node tests/e2e/run-playwright.mjs",
     "test:filters": "tsc -p tsconfig.filters-test.json && node .filter-test-dist/tests/galleryFilters.test.js",
     "preview": "vite preview --host 127.0.0.1",
     "tauri": "tauri"
@@ -19,6 +20,7 @@
     "react-dom": "19.2.7"
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.1",
     "@tauri-apps/cli": "2.11.4",
     "@types/react": "19.2.17",
     "@types/react-dom": "19.2.3",

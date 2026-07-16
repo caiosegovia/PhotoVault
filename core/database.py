@@ -1295,6 +1295,39 @@ def get_asset_instances(asset_id: int) -> list[sqlite3.Row]:
         ).fetchall()
 
 
+_GALLERY_DEVICE_TYPE_SQL = """CASE
+    WHEN COALESCE(am.device_type, 'unknown') <> 'unknown' THEN lower(am.device_type)
+    WHEN lower(COALESCE(am.device_name, '')) LIKE '%dji%' OR lower(COALESCE(am.device_name, '')) LIKE '%drone%' THEN 'drone'
+    WHEN lower(COALESCE(am.device_name, '')) LIKE '%iphone%' OR lower(COALESCE(am.device_name, '')) LIKE '%samsung%' OR lower(COALESCE(am.device_name, '')) LIKE '%sm-%' THEN 'phone'
+    WHEN lower(COALESCE(am.device_name, '')) LIKE '%whatsapp%' OR lower(COALESCE(am.device_name, '')) LIKE '%adobe%' OR lower(COALESCE(am.device_name, '')) LIKE '%lightroom%' THEN 'app'
+    WHEN lower(COALESCE(am.device_name, '')) LIKE '%canon%' OR lower(COALESCE(am.device_name, '')) LIKE '%nikon%' OR lower(COALESCE(am.device_name, '')) LIKE '%sony%' OR lower(COALESCE(am.device_name, '')) LIKE '%fujifilm%' OR lower(COALESCE(am.device_name, '')) LIKE '%gopro%' THEN 'camera'
+    ELSE 'unknown'
+END"""
+
+
+_GALLERY_CAMERA_SQL = """COALESCE(
+    NULLIF(TRIM(
+      CASE
+        WHEN lower(COALESCE(am.camera_make, '')) LIKE '%dji%' THEN 'DJI'
+        WHEN upper(COALESCE(am.camera_model, '')) LIKE 'FC%' THEN 'DJI'
+        WHEN lower(COALESCE(am.camera_make, '')) LIKE '%samsung%' THEN 'Samsung'
+        WHEN lower(COALESCE(am.camera_make, '')) LIKE '%apple%' THEN 'Apple'
+        WHEN lower(COALESCE(am.camera_make, '')) LIKE '%canon%' THEN 'Canon'
+        WHEN lower(COALESCE(am.camera_make, '')) LIKE '%nikon%' THEN 'Nikon'
+        WHEN lower(COALESCE(am.camera_make, '')) LIKE '%sony%' THEN 'Sony'
+        WHEN lower(COALESCE(am.camera_make, '')) LIKE '%fujifilm%' THEN 'Fujifilm'
+        WHEN lower(COALESCE(am.camera_make, '')) LIKE '%gopro%' THEN 'GoPro'
+        ELSE COALESCE(am.camera_make, '')
+      END || ' ' ||
+      CASE
+        WHEN upper(COALESCE(am.camera_model, '')) LIKE 'DJI %' THEN substr(COALESCE(am.camera_model, ''), 5)
+        ELSE COALESCE(am.camera_model, '')
+      END
+    ), ''),
+    COALESCE(am.device_name, '')
+)"""
+
+
 def _gallery_filter_sql(filters: Optional[dict] = None, query: str = "") -> tuple[str, list]:
     filters = filters or {}
     where: list[str] = []
@@ -1328,17 +1361,8 @@ def _gallery_filter_sql(filters: Optional[dict] = None, query: str = "") -> tupl
 
     device_type = str(filters.get('deviceType') or filters.get('device_type') or '').lower()
     if device_type and device_type != 'all':
-        if device_type == 'drone':
-            where.append("(lower(COALESCE(am.device_type, 'unknown')) = 'drone' OR lower(COALESCE(am.device_name, '')) LIKE '%dji%' OR lower(COALESCE(am.device_name, '')) LIKE '%drone%')")
-        elif device_type == 'phone':
-            where.append("(lower(COALESCE(am.device_type, 'unknown')) = 'phone' OR lower(COALESCE(am.device_name, '')) LIKE '%iphone%' OR lower(COALESCE(am.device_name, '')) LIKE '%samsung%' OR lower(COALESCE(am.device_name, '')) LIKE '%sm-%')")
-        elif device_type == 'app':
-            where.append("(lower(COALESCE(am.device_type, 'unknown')) = 'app' OR lower(COALESCE(am.device_name, '')) LIKE '%adobe%' OR lower(COALESCE(am.device_name, '')) LIKE '%lightroom%')")
-        elif device_type == 'camera':
-            where.append("(lower(COALESCE(am.device_type, 'unknown')) = 'camera' OR lower(COALESCE(am.device_name, '')) LIKE '%canon%' OR lower(COALESCE(am.device_name, '')) LIKE '%nikon%' OR lower(COALESCE(am.device_name, '')) LIKE '%sony%' OR lower(COALESCE(am.device_name, '')) LIKE '%fujifilm%' OR lower(COALESCE(am.device_name, '')) LIKE '%gopro%')")
-        else:
-            where.append("lower(COALESCE(am.device_type, 'unknown')) = ?")
-            params.append(device_type)
+        where.append(f"{_GALLERY_DEVICE_TYPE_SQL} = ?")
+        params.append(device_type)
 
     device = str(filters.get('device') or '').lower()
     if device and device != 'all':
@@ -1347,21 +1371,8 @@ def _gallery_filter_sql(filters: Optional[dict] = None, query: str = "") -> tupl
 
     camera = str(filters.get('camera') or '').lower()
     if camera and camera != 'all':
-        where.append("""(
-            lower(trim(COALESCE(am.camera_make, '') || ' ' || COALESCE(am.camera_model, ''))) LIKE ?
-            OR lower(trim(
-                CASE
-                  WHEN lower(COALESCE(am.camera_make, '')) LIKE '%dji%' OR upper(COALESCE(am.camera_model, '')) LIKE 'FC%' THEN 'DJI'
-                  ELSE COALESCE(am.camera_make, '')
-                END || ' ' ||
-                CASE
-                  WHEN upper(COALESCE(am.camera_model, '')) LIKE 'DJI %' THEN substr(COALESCE(am.camera_model, ''), 5)
-                  ELSE COALESCE(am.camera_model, '')
-                END
-            )) LIKE ?
-            OR lower(COALESCE(am.device_name, '')) = ?
-        )""")
-        params.extend([f"%{camera}%", f"%{camera}%", camera])
+        where.append(f"lower({_GALLERY_CAMERA_SQL}) = ?")
+        params.append(camera)
 
     lens = str(filters.get('lens') or '').lower()
     if lens and lens != 'all':
@@ -1481,14 +1492,7 @@ def _gallery_asset_select(where_sql: str = "", join_sql: str = "", order_sql: st
                    a.height AS height,
                    a.duration AS duration,
                    COALESCE(am.device_name, 'Desconhecido') AS device_name,
-                   CASE
-                     WHEN COALESCE(am.device_type, 'unknown') <> 'unknown' THEN am.device_type
-                     WHEN lower(COALESCE(am.device_name, '')) LIKE '%dji%' OR lower(COALESCE(am.device_name, '')) LIKE '%drone%' THEN 'drone'
-                     WHEN lower(COALESCE(am.device_name, '')) LIKE '%iphone%' OR lower(COALESCE(am.device_name, '')) LIKE '%samsung%' OR lower(COALESCE(am.device_name, '')) LIKE '%sm-%' THEN 'phone'
-                     WHEN lower(COALESCE(am.device_name, '')) LIKE '%adobe%' OR lower(COALESCE(am.device_name, '')) LIKE '%lightroom%' THEN 'app'
-                     WHEN lower(COALESCE(am.device_name, '')) LIKE '%canon%' OR lower(COALESCE(am.device_name, '')) LIKE '%nikon%' OR lower(COALESCE(am.device_name, '')) LIKE '%sony%' OR lower(COALESCE(am.device_name, '')) LIKE '%fujifilm%' OR lower(COALESCE(am.device_name, '')) LIKE '%gopro%' THEN 'camera'
-                     ELSE 'unknown'
-                   END AS device_type,
+                   {_GALLERY_DEVICE_TYPE_SQL} AS device_type,
                    COALESCE(am.camera_make, '') AS camera_make,
                    COALESCE(am.camera_model, '') AS camera_model,
                    COALESCE(am.lens_model, '') AS lens_model,
@@ -1917,28 +1921,6 @@ def _facet_rows(conn: sqlite3.Connection, label_sql: str, filters: Optional[dict
 
 def gallery_breakdowns(limit: int = 8, filters: Optional[dict] = None, query: str = "") -> dict:
     """Return grouped gallery facets scoped by the currently active filters."""
-    device_type_sql = """CASE
-        WHEN COALESCE(am.device_type, 'unknown') <> 'unknown' THEN am.device_type
-        WHEN lower(COALESCE(am.device_name, '')) LIKE '%dji%' OR lower(COALESCE(am.device_name, '')) LIKE '%drone%' THEN 'drone'
-        WHEN lower(COALESCE(am.device_name, '')) LIKE '%iphone%' OR lower(COALESCE(am.device_name, '')) LIKE '%samsung%' OR lower(COALESCE(am.device_name, '')) LIKE '%sm-%' THEN 'phone'
-        WHEN lower(COALESCE(am.device_name, '')) LIKE '%adobe%' OR lower(COALESCE(am.device_name, '')) LIKE '%lightroom%' THEN 'app'
-        WHEN lower(COALESCE(am.device_name, '')) LIKE '%canon%' OR lower(COALESCE(am.device_name, '')) LIKE '%nikon%' OR lower(COALESCE(am.device_name, '')) LIKE '%sony%' OR lower(COALESCE(am.device_name, '')) LIKE '%fujifilm%' OR lower(COALESCE(am.device_name, '')) LIKE '%gopro%' THEN 'camera'
-        ELSE 'unknown'
-    END"""
-    camera_sql = """COALESCE(
-        NULLIF(TRIM(
-          CASE
-            WHEN lower(COALESCE(am.camera_make, '')) LIKE '%dji%' THEN 'DJI'
-            WHEN upper(COALESCE(am.camera_model, '')) LIKE 'FC%' THEN 'DJI'
-            ELSE COALESCE(am.camera_make, '')
-          END || ' ' ||
-          CASE
-            WHEN upper(COALESCE(am.camera_model, '')) LIKE 'DJI %' THEN substr(COALESCE(am.camera_model, ''), 5)
-            ELSE COALESCE(am.camera_model, '')
-          END
-        ), ''),
-        COALESCE(am.device_name, '')
-    )"""
     size_sql = """CASE
         WHEN COALESCE(a.size, 0) >= 52428800 THEN 'large'
         WHEN COALESCE(a.size, 0) <= 10485760 THEN 'small'
@@ -1949,10 +1931,10 @@ def gallery_breakdowns(limit: int = 8, filters: Optional[dict] = None, query: st
             'media': _facet_rows(conn, "COALESCE(a.media_type, 'other')", filters, {'media', 'media_type'}, query, limit, order_sql="count DESC"),
             'years': _facet_rows(conn, "COALESCE(strftime('%Y', a.date_taken), 'Sem data')", filters, {'year', 'month'}, query, limit, order_sql="label DESC"),
             'months': _facet_rows(conn, "COALESCE(strftime('%Y-%m', a.date_taken), 'Sem data')", filters, {'month'}, query, limit, order_sql="label DESC"),
-            'extensions': _facet_rows(conn, "COALESCE(a.extension, 'sem extensao')", filters, {'extension'}, query, limit, order_sql="count DESC"),
+            'extensions': _facet_rows(conn, "lower(ltrim(COALESCE(a.extension, 'sem extensao'), '.'))", filters, {'extension'}, query, limit, order_sql="count DESC"),
             'devices': _facet_rows(conn, "COALESCE(am.device_name, 'Desconhecido')", filters, {'device'}, query, limit, order_sql="count DESC"),
-            'deviceTypes': _facet_rows(conn, device_type_sql, filters, {'deviceType', 'device_type'}, query, limit, order_sql="count DESC"),
-            'cameras': _facet_rows(conn, camera_sql, filters, {'camera'}, query, limit, "label <> '' AND label <> 'Desconhecido'", "count DESC"),
+            'deviceTypes': _facet_rows(conn, _GALLERY_DEVICE_TYPE_SQL, filters, {'deviceType', 'device_type'}, query, limit, order_sql="count DESC"),
+            'cameras': _facet_rows(conn, _GALLERY_CAMERA_SQL, filters, {'camera'}, query, limit, "label <> '' AND label <> 'Desconhecido'", "count DESC"),
             'lenses': _facet_rows(conn, "COALESCE(am.lens_model, '')", filters, {'lens'}, query, limit, "label <> '' AND label <> 'Desconhecido'", "count DESC"),
             'sizes': _facet_rows(conn, size_sql, filters, {'size'}, query, 3, order_sql="CASE label WHEN 'large' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END"),
         }

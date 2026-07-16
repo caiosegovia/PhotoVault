@@ -313,12 +313,31 @@ def test_gallery_facets_round_trip_against_real_sqlite(tmp_path, monkeypatch):
         date_taken=datetime(2025, 11, 5, 9, 0, 0),
         device_name='Apple iPhone 15 Pro', device_type='phone', camera_make='Apple', camera_model='iPhone 15 Pro',
     )
+    _seed_gallery_asset(
+        database, 6, path='D:/Vault/2025/11/WHATSAPP_0001.JPG', sha='f' * 64,
+        size=3_000_000, media_type='photo', extension='jpg',
+        date_taken=datetime(2025, 11, 6, 9, 0, 0),
+        device_name='WhatsApp', device_type='unknown',
+    )
+    _seed_gallery_asset(
+        database, 7, path='D:/Vault/2025/11/SAMSUNG_0001.JPG', sha='1' * 64,
+        size=5_000_000, media_type='photo', extension='jpg',
+        date_taken=datetime(2025, 11, 7, 9, 0, 0),
+        device_name='Samsung SM-G781B', device_type='unknown', camera_make='samsung', camera_model='SM-G781B',
+    )
+    _seed_gallery_asset(
+        database, 8, path='D:/Vault/2025/11/SAMSUNG_0002.JPG', sha='2' * 64,
+        size=6_000_000, media_type='photo', extension='jpg',
+        date_taken=datetime(2025, 11, 8, 9, 0, 0),
+        device_name='Samsung SM-G781B', device_type='phone', camera_make='Samsung', camera_model='SM-G781B',
+    )
 
     base = bridge.gallery({'limit': 20})
 
-    assert base['total'] == 5
+    assert base['total'] == 8
     assert {item['label'] for item in base['breakdowns']['sizes']} == {'large', 'medium', 'small'}
     assert any(item['label'] == '24mm' for item in base['breakdowns']['lenses'])
+    assert sum(1 for item in base['breakdowns']['cameras'] if item['label'] == 'Samsung SM-G781B') == 1
 
     facet_cases = [
         ('media', 'video', {'media': 'video'}),
@@ -347,3 +366,20 @@ def test_gallery_facets_round_trip_against_real_sqlite(tmp_path, monkeypatch):
     scoped = bridge.gallery({'limit': 10, 'filter': {'month': '2026-06', 'device': 'DJI FC7303'}})
     assert {item['label'].lstrip('.') for item in scoped['breakdowns']['extensions']} == {'jpg', 'dng'}
     assert all(item['count'] > 0 for item in scoped['breakdowns']['extensions'])
+
+    facet_filters = {
+        'media': 'media',
+        'years': 'year',
+        'months': 'month',
+        'extensions': 'extension',
+        'devices': 'device',
+        'deviceTypes': 'deviceType',
+        'cameras': 'camera',
+        'lenses': 'lens',
+        'sizes': 'size',
+    }
+    for facet, filter_key in facet_filters.items():
+        for item in base['breakdowns'][facet]:
+            result = bridge.gallery({'limit': 10, 'filter': {filter_key: item['label']}})
+            assert result['filteredTotal'] == item['count'], (facet, item['label'], item['count'], result['filteredTotal'])
+            assert result['items'], (facet, item['label'])
