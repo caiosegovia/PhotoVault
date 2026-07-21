@@ -2081,6 +2081,34 @@ def update_import_file_decision(file_id: int, decision: str, status: Optional[st
             )
 
 
+def update_import_file_decisions_by_reason(import_id: int, reason: str, decision: str) -> int:
+    """Update one decision group atomically without hydrating every file row."""
+    action = {'import': 'copy', 'skip': 'skip', 'review': 'skip'}.get(decision, decision)
+    file_status = 'planned' if decision == 'import' else 'skipped' if decision == 'skip' else 'review'
+    operation_status = 'planned' if action in {'copy', 'move'} else 'skipped'
+    with _get_conn() as conn:
+        rows = conn.execute(
+            """SELECT ingest_operation_id
+               FROM import_files
+               WHERE import_id=? AND reason=?""",
+            (import_id, reason),
+        ).fetchall()
+        operation_ids = [int(row['ingest_operation_id']) for row in rows if row['ingest_operation_id']]
+        result = conn.execute(
+            """UPDATE import_files
+               SET decision=?, status=?
+               WHERE import_id=? AND reason=?""",
+            (action, file_status, import_id, reason),
+        )
+        if operation_ids:
+            placeholders = ','.join('?' for _ in operation_ids)
+            conn.execute(
+                f"UPDATE ingest_operations SET action=?, status=? WHERE id IN ({placeholders})",
+                (action, operation_status, *operation_ids),
+            )
+        return max(0, result.rowcount)
+
+
 def list_imports(limit: int = 50) -> list[dict]:
     with _get_conn() as conn:
         rows = conn.execute(

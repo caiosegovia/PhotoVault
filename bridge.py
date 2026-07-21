@@ -34,7 +34,7 @@ from core.database import (
     start_background_job,
     summarize_import_decisions,
     update_background_job_status,
-    update_import_file_decision,
+    update_import_file_decisions_by_reason,
     update_import_status,
     update_ingest_plan_status,
 )
@@ -51,8 +51,9 @@ from utils.logging import get_log_path, setup_logging
 
 
 PROGRESS_PATH = CONFIG_DIR / "progress.json"
-GALLERY_ITEM_LIMIT = 50000
-MAX_GALLERY_PAGE_LIMIT = 50000
+DEFAULT_GALLERY_PAGE_LIMIT = 240
+MAX_GALLERY_PAGE_LIMIT = 1000
+PREVIEW_BATCH_LIMIT = 50000
 log = logging.getLogger("photovault.bridge")
 
 try:
@@ -320,7 +321,7 @@ def _gallery_items(assets: list[dict], ensure_thumbnails: bool = False) -> list[
 
 
 def _gallery_payload(
-    limit: int = GALLERY_ITEM_LIMIT,
+    limit: int = DEFAULT_GALLERY_PAGE_LIMIT,
     offset: int = 0,
     filters: dict | None = None,
     query: str = "",
@@ -561,16 +562,9 @@ def analyze_import(payload: dict) -> dict:
     return {'ok': True, 'importId': analysis.import_id}
 
 
-def files(payload: dict) -> dict:
-    init_db()
-    import_id = int(payload.get('importId'))
-    limit = int(payload.get('limit') or GALLERY_ITEM_LIMIT)
-    return {'files': [_file_row(item) for item in get_import_files(import_id, limit=limit)]}
-
-
 def gallery(payload: dict) -> dict:
     init_db()
-    limit = max(1, min(int(payload.get('limit') or GALLERY_ITEM_LIMIT), MAX_GALLERY_PAGE_LIMIT))
+    limit = max(1, min(int(payload.get('limit') or DEFAULT_GALLERY_PAGE_LIMIT), MAX_GALLERY_PAGE_LIMIT))
     offset = max(0, int(payload.get('offset') or 0))
     filters = payload.get('filter') or {}
     query = payload.get('query') or filters.get('query') or ''
@@ -694,7 +688,7 @@ def _run_metadata_batches(job_id: int, batch_size: int = 2000, step_status: dict
             return totals
 
 
-def _run_preview_generation(job_id: int, limit: int = GALLERY_ITEM_LIMIT, step_status: dict | None = None) -> dict:
+def _run_preview_generation(job_id: int, limit: int = PREVIEW_BATCH_LIMIT, step_status: dict | None = None) -> dict:
     step_status = step_status or {'analysis': 'done', 'copy': 'done', 'metadata': 'done', 'previews': 'running', 'finalize': 'pending'}
     assets = list_gallery_assets(limit=limit, offset=0)
     result = {'total': len(assets), 'generated': 0, 'skipped': 0, 'errors': 0}
@@ -774,17 +768,6 @@ def import_insights(payload: dict) -> dict:
     return _import_insights(int(payload.get('importId')))
 
 
-def update_decisions(payload: dict) -> dict:
-    init_db()
-    decision = payload.get('decision')
-    ids = payload.get('ids') or []
-    if decision not in {'import', 'skip', 'review'}:
-        raise ValueError('Decisão inválida')
-    for file_id in ids:
-        update_import_file_decision(int(file_id), decision)
-    return {'ok': True, 'importInsights': _import_insights(int(payload.get('importId'))) if payload.get('importId') else None}
-
-
 def update_decision_group(payload: dict) -> dict:
     init_db()
     import_id = int(payload.get('importId'))
@@ -794,10 +777,10 @@ def update_decision_group(payload: dict) -> dict:
         raise ValueError('Decisão inválida')
     if reason == 'new_asset' and decision == 'skip':
         raise ValueError('Arquivos novos nao podem ser ignorados em massa. Use Revisar ou Importar.')
-    files = get_import_files(import_id, limit=100000, reason=reason)
-    for item in files:
-        update_import_file_decision(int(item['id']), decision)
-    return {'ok': True, 'updated': len(files), 'importInsights': _import_insights(import_id)}
+    if not reason:
+        raise ValueError('Motivo obrigatorio')
+    updated = update_import_file_decisions_by_reason(import_id, str(reason), decision)
+    return {'ok': True, 'updated': updated, 'importInsights': _import_insights(import_id)}
 
 
 def catalog(payload: dict) -> dict:
@@ -1044,9 +1027,7 @@ COMMANDS = {
     'state': state,
     'set_vault': set_vault,
     'analyze_import': analyze_import,
-    'files': files,
     'import_insights': import_insights,
-    'update_decisions': update_decisions,
     'update_decision_group': update_decision_group,
     'execute_import': execute_import,
     'reset_all': reset_all,

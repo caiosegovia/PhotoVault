@@ -206,6 +206,35 @@ def test_gallery_payload_can_hydrate_thumbnails_in_same_pass(tmp_path, monkeypat
     assert result['items'][0]['previewStatus'] == 'ready'
 
 
+def test_gallery_uses_safe_default_and_clamps_page_limit(monkeypatch):
+    import bridge
+
+    monkeypatch.setattr(bridge, 'init_db', lambda: None)
+    calls = []
+    monkeypatch.setattr(
+        bridge,
+        '_gallery_payload',
+        lambda limit, **kwargs: calls.append(limit) or {'page': {'count': 0, 'hasMore': False}},
+    )
+
+    bridge.gallery({})
+    bridge.gallery({'limit': 50000})
+
+    assert calls == [bridge.DEFAULT_GALLERY_PAGE_LIMIT, bridge.MAX_GALLERY_PAGE_LIMIT]
+
+
+def test_bridge_command_registry_matches_public_contract():
+    import bridge
+
+    assert set(bridge.COMMANDS) == {
+        'state', 'set_vault', 'analyze_import', 'import_insights',
+        'update_decision_group', 'execute_import', 'reset_all', 'gallery',
+        'search_gallery', 'enrich_metadata', 'health', 'catalog',
+        'update_tags', 'add_note', 'progress', 'logs', 'diagnostics',
+        'job_control',
+    }
+
+
 def test_execute_import_runs_metadata_batches_and_previews(monkeypatch, tmp_path):
     import bridge
 

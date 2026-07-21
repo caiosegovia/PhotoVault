@@ -146,6 +146,7 @@ Comandos ativos:
 | `catalog` | Retorna tags e notas de um asset. |
 | `update_tags` | Atualiza tags manuais de um asset. |
 | `add_note` | Adiciona nota de curadoria a um asset. |
+| `job_control` | Pausa, retoma ou cancela jobs de importacao. |
 | `progress` | Retorna progresso atual e metricas de jobs longos. |
 | `logs` | Retorna tail do log local. |
 | `diagnostics` | Retorna prontidao do ambiente local e ferramentas opcionais. |
@@ -228,6 +229,13 @@ cd frontend
 npm.cmd run test:filters
 ```
 
+Testes de interface com Playwright:
+
+```powershell
+cd frontend
+npm.cmd run test:e2e
+```
+
 Build frontend:
 
 ```powershell
@@ -262,7 +270,8 @@ A suite atual cobre:
 - ingestao com staging, duplicatas e capacidade de disco;
 - enriquecimento com ExifTool opcional;
 - organizador/scanner/inventory legados;
-- filtros TypeScript da galeria.
+- filtros TypeScript da galeria;
+- fluxos E2E dos filtros e da lista da galeria com Playwright.
 
 ## Decisoes Tecnicas Recentes
 
@@ -287,8 +296,9 @@ A suite atual cobre:
 
 - O catalogo ja tem base para IA/agente, mas ainda nao chama modelos externos.
 - As facetas de camera dependem de metadados realmente extraidos; imports antigos podem aparecer como `Desconhecido` ate receberem enriquecimento.
-- A lista Explorer da galeria ja renderiza em lotes, mas a consulta ainda carrega um limite alto em memoria; paginacao SQLite continua como prioridade.
+- A galeria usa paginacao SQLite com pagina padrao de 240 e teto de 1000 itens por resposta; virtualizacao visual pode ser avaliada caso paginas grandes pesem em maquinas antigas.
 - Jobs longos ainda rodam como chamadas bridge sincrona disparadas pelo Tauri; ja existe base de `background_jobs`, mas workers retomaveis completos ainda sao evolucao futura.
+- Backup/restauracao assistidos e verificacao de integridade do catalogo SQLite ainda precisam de uma UX dedicada antes de tratar o app como unica copia de um acervo.
 
 ## Licenca
 

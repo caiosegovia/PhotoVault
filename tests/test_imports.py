@@ -59,6 +59,38 @@ def test_execute_import_updates_import_status_and_copies_new_files(tmp_path, mon
     assert copied.exists()
 
 
+def test_update_decision_group_updates_files_and_operations_atomically(tmp_path, monkeypatch):
+    import core.database as database
+
+    monkeypatch.setattr(database, 'DB_PATH', tmp_path / 'database.db')
+    database.init_db()
+    vault_id = database.save_vault('Vault', str(tmp_path / 'vault'), '{year}/{month}')
+    import_id = database.create_import(vault_id, 'Import', str(tmp_path / 'source'))
+    plan_id = database.create_ingest_plan(vault_id)
+    database.set_import_plan(import_id, plan_id)
+
+    operation_ids = []
+    for index in range(3):
+        src = str(tmp_path / 'source' / f'{index}.jpg')
+        dst = str(tmp_path / 'vault' / f'{index}.jpg')
+        operation_id = database.add_ingest_operation(plan_id, {
+            'src_path': src, 'dst_path': dst, 'action': 'copy', 'reason': 'duplicate',
+        })
+        operation_ids.append(operation_id)
+        database.add_import_file(import_id, {
+            'src_path': src, 'dst_path': dst, 'ingest_operation_id': operation_id,
+            'decision': 'copy', 'reason': 'duplicate',
+        })
+
+    updated = database.update_import_file_decisions_by_reason(import_id, 'duplicate', 'skip')
+
+    assert updated == 3
+    assert {row['decision'] for row in database.get_import_files(import_id)} == {'skip'}
+    operations = database.get_ingest_operations(plan_id)
+    assert {row['action'] for row in operations} == {'skip'}
+    assert {row['status'] for row in operations} == {'skipped'}
+
+
 def test_create_import_analysis_rejects_source_inside_vault(tmp_path, monkeypatch):
     import core.database as database
     import core.imports as imports

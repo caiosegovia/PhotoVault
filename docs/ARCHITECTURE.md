@@ -108,13 +108,14 @@ sequenceDiagram
 | `import_insights` | `{ importId }` | grupos por motivo, midia e status. |
 | `update_decision_group` | `{ importId, reason, decision }` | quantidade atualizada e insights. |
 | `execute_import` | `{ planId, verifyMode }` | resultado de ingestao e metricas. |
-| `gallery` | `{ limit, offset, filter, sort, ensureThumbnails }` | itens, pagina, total filtrado, totais, facetas, capacidades e timings. |
+| `gallery` | `{ limit, offset, filter, sort, ensureThumbnails }` | itens, pagina (padrao 240, teto 1000), total filtrado, totais, facetas, capacidades e timings. |
 | `search_gallery` | `{ query, limit, offset, filter, sort, ensureThumbnails? }` | resultados por FTS5/SQLite com o mesmo formato de `GalleryState`. |
 | `enrich_metadata` | `{ limit }` | resultado do ExifTool e estado atualizado. |
 | `health` | `{}` | saude operacional, imports retomaveis, jobs e insights deterministicas. |
 | `catalog` | `{ assetId }` | tags e notas de curadoria do asset. |
 | `update_tags` | `{ assetId, tags }` | substitui tags manuais do asset. |
 | `add_note` | `{ assetId, body }` | adiciona nota de curadoria. |
+| `job_control` | `{ jobId, action }` | pausa, retoma ou cancela jobs de importacao. |
 | `progress` | `{}` | progresso atual e caminho do log. |
 | `logs` | `{ lines }` | tail do log local. |
 | `diagnostics` | `{}` | status de Python, Node/npm, Cargo, ffmpeg, ffprobe, ExifTool e paths locais. |

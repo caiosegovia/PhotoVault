@@ -45,11 +45,12 @@ Implementado:
 
 Status: implementado com renderizacao incremental da lista Explorer, `limit`/`offset`, filtros principais e ordenacao aplicados na bridge/SQLite.
 
-Problema original: `GALLERY_ITEM_LIMIT` chegava a 50000 itens e a UI filtrava localmente.
+Problema original: a galeria chegava a carregar 50000 itens e a UI filtrava localmente.
 
 Implementado:
 
 - renderizacao inicial limitada a 240 linhas;
+- teto defensivo de 1000 itens por resposta da bridge;
 - botao para carregar mais resultados filtrados sem redesenhar todos os itens de uma vez;
 - payload `gallery`/`search_gallery` retorna bloco `page` com `limit`, `offset`, `count`, `hasMore` e `filteredTotal`;
 - filtros por texto, tipo, ano, mes, extensao, dispositivo, camera, lente, tamanho e problema sao aplicados antes da pagina;
@@ -290,7 +291,7 @@ Implementado:
 
 Proximos passos opcionais:
 
-- paginacao/filtros em SQLite;
+- virtualizacao visual se a pagina de 240 itens pesar em hardware antigo;
 - ordenar por coluna;
 - selecao multipla e acoes em lote;
 - preview modal em tela maior quando o usuario pedir.

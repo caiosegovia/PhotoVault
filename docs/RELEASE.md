@@ -40,6 +40,13 @@ cd frontend
 npm.cmd run test:filters
 ```
 
+Interface/E2E:
+
+```powershell
+cd frontend
+npm.cmd run test:e2e
+```
+
 ## 3. Build Frontend
 
 ```powershell
@@ -150,3 +157,4 @@ git push origin vX.Y.Z
 - Decidir formato de release: instalador, zip portavel ou ambos.
 - Definir estrategia final de licenca/distribuicao para ffmpeg/ffprobe antes de release publica.
 - Documentar recomendacao oficial de instalacao do ExifTool externo sem empacotar executavel suspeito.
+- Implementar backup/restauracao assistidos e checagem de integridade do catalogo SQLite.
